@@ -62,23 +62,32 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     guard result == nil, !validating else { return }
     webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
       guard let self, self.result == nil, !self.validating else { return }
-      guard let cookie = cookies.first(where: { $0.name == PointFreeClient.cookieName && $0.domain.hasSuffix("pointfree.co") }),
-            !self.rejected.contains(cookie.value)
-      else { return }
+      guard let cookie = cookies.first(where: {
+        $0.name == PointFreeClient.cookieName
+          && ($0.domain == "www.pointfree.co" || $0.domain.hasSuffix(".pointfree.co"))
+          && !self.rejected.contains($0.value)
+      }) else { return }
       self.validating = true
       let value = cookie.value
       let expires = cookie.expiresDate
       let validate = self.validate
       // Валидация идёт вне главного актора; результат возвращаем через RunLoop (см. комментарий у таймера).
       Task.detached {
-        let ok = (try? await validate(value)) ?? false
+        let outcome: Bool? = try? await validate(value)  // nil — ошибка (сеть), не приговор cookie
         RunLoop.main.perform(inModes: [.common]) {
           MainActor.assumeIsolated {
             self.validating = false
-            if ok {
+            switch outcome {
+            case .some(true):
               self.finish(.cookie(value, expires: expires))
-            } else {
+            case .some(false):
               self.rejected.insert(value)  // анонимная сессия (например, состояние OAuth); ждём дальше
+              self.checkCookies()  // за время проверки могла прийти другая cookie
+            case .none:
+              // Временная ошибка: не запоминаем как отвергнутую, повторяем через 2 с (границу задаёт --timeout).
+              Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
+                MainActor.assumeIsolated { self?.checkCookies() }
+              }
             }
           }
         }

@@ -115,10 +115,17 @@ extension PointFreeClient {
         try await cachedHTML(key: "blog/posts/\(pathComponent)") { try await get("blog/posts/\(pathComponent)", cookie: nil) }
       },
       validateSession: { cookie in
-        var request = URLRequest(url: baseURL.appendingPathComponent("account"))
+        // 200 — сессия принята; редирект (на /login) или 401/403 — отвергнута;
+        // прочие коды (5xx, 429, …) ничего не говорят о cookie и выбрасываются как ошибка.
+        let url = baseURL.appendingPathComponent("account")
+        var request = URLRequest(url: url)
         request.setValue("\(cookieName)=\(cookie)", forHTTPHeaderField: "Cookie")
         let response = try await http.fetch(request)
-        return response.statusCode == 200
+        switch response.statusCode {
+        case 200: return true
+        case 300..<400, 401, 403: return false
+        default: throw PointFreeError.httpStatus(response.statusCode, url)
+        }
       },
       invalidateCache: { await cache.removeAll() }
     )

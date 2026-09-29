@@ -22,8 +22,12 @@ extension SessionStore {
       },
       save: { session in
         let fm = FileManager.default
-        try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        // 0700 только для каталога, который создаём сами; права существующего каталога
+        // (например, заданного через POINTFREE_MCP_HOME) не трогаем.
+        if !fm.fileExists(atPath: directory.path) {
+          try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+          try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
+        }
         let data = try JSONEncoder().encode(session)
         // Файл создаётся сразу с правами 0600, без окна с правами по umask.
         guard fm.createFile(atPath: fileURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {

@@ -106,3 +106,21 @@ private func client(
   #expect(log.requests[0].url?.absoluteString == "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")
   #expect(log.requests[0].value(forHTTPHeaderField: "Cookie") == nil)
 }
+
+@Test func validateSessionMapsStatusCodes() async throws {
+  let log = RequestLog()
+  let c = client(log: log) { req in
+    HTTPResponse(statusCode: Int(req.value(forHTTPHeaderField: "Cookie")?.dropFirst("pf_session=".count) ?? "") ?? 0, body: Data())
+  }
+  #expect(try await c.validateSession("200") == true)
+  #expect(try await c.validateSession("301") == false)
+  #expect(try await c.validateSession("401") == false)
+  #expect(try await c.validateSession("403") == false)
+  let account = try #require(URL(string: "https://www.pointfree.co/account"))
+  await #expect(throws: PointFreeError.httpStatus(503, account)) {
+    _ = try await c.validateSession("503")
+  }
+  await #expect(throws: PointFreeError.httpStatus(429, account)) {
+    _ = try await c.validateSession("429")
+  }
+}

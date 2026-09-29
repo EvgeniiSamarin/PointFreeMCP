@@ -6,7 +6,7 @@
 
 **Architecture:** Библиотека `PointFreeKit` (модели, HTTP-клиент, парсеры SwiftSoup, рендер markdown, хранилище сессии, обработчики инструментов) без AppKit и без MCP-типов; исполняемый `pointfree-mcp` связывает её с `MCP` swift-sdk (команда `serve`) и содержит AppKit-окно входа (команда `login`). Все внешние эффекты — dependencies из swift-dependencies, в тестах подменяются.
 
-**Tech Stack:** Swift 6.2 tools, macOS 26, modelcontextprotocol/swift-sdk 0.12, SwiftSoup 2.13, swift-argument-parser 1.8, swift-dependencies 1.17, swift-log 1.15, Swift Testing.
+**Tech Stack:** Swift 6.2 tools, macOS 26, modelcontextprotocol/swift-sdk 0.12, SwiftSoup 2.13, Foundation XMLParser (Atom-фид блога), swift-argument-parser 1.8, swift-dependencies 1.17, swift-log 1.15, Swift Testing.
 
 **Spec:** `docs/superpowers/specs/2026-09-29-pointfree-mcp-design.md`
 
@@ -812,6 +812,7 @@ git commit -m "feat: in-memory TTL cache"
   - `collectionsPage: () async throws -> String`
   - `collectionPage: (_ slug: String) async throws -> String`
   - `sectionPage: (_ slug: String, _ section: String) async throws -> String`
+  - `blogFeed: () async throws -> String` (Atom XML)
   - `validateSession: (_ cookie: String) async throws -> Bool`
   - `invalidateCache: () async -> Void`
   - `PointFreeClient.live(cache:)` и `PointFreeClient.baseURL`.
@@ -899,6 +900,13 @@ private func client(
   #expect(log.requests[0].url?.absoluteString == "https://www.pointfree.co/account")
 }
 
+@Test func blogFeedIsFetchedFromAtomURL() async throws {
+  let log = RequestLog()
+  let c = client(log: log) { _ in HTTPResponse(statusCode: 200, body: Data("<feed/>".utf8)) }
+  #expect(try await c.blogFeed() == "<feed/>")
+  #expect(log.requests[0].url?.absoluteString == "https://www.pointfree.co/blog/feed/atom.xml")
+}
+
 @Test func serverErrorsSurfaceAsHttpStatus() async throws {
   let log = RequestLog()
   let c = client(log: log) { _ in HTTPResponse(statusCode: 503, body: Data()) }
@@ -966,6 +974,7 @@ public struct PointFreeClient: Sendable {
   public var collectionsPage: @Sendable () async throws -> String
   public var collectionPage: @Sendable (_ slug: String) async throws -> String
   public var sectionPage: @Sendable (_ slug: String, _ section: String) async throws -> String
+  public var blogFeed: @Sendable () async throws -> String
   public var validateSession: @Sendable (_ cookie: String) async throws -> Bool
   public var invalidateCache: @Sendable () async -> Void
 }
@@ -1050,6 +1059,9 @@ extension PointFreeClient {
       sectionPage: { slug, section in
         try await cachedHTML(key: "collections/\(slug)/\(section)") { try await get("collections/\(slug)/\(section)", cookie: nil) }
       },
+      blogFeed: {
+        try await cachedHTML(key: "blog/feed/atom.xml") { try await get("blog/feed/atom.xml", cookie: nil) }
+      },
       validateSession: { cookie in
         var request = URLRequest(url: baseURL.appendingPathComponent("account"))
         request.setValue("\(cookieName)=\(cookie)", forHTTPHeaderField: "Cookie")
@@ -1078,7 +1090,7 @@ extension DependencyValues {
 - [ ] **Step 4: Тесты проходят**
 
 Run: `swift test --filter PointFreeClientTests`
-Expected: 7 тестов PASS. Если `withDependencies` не подхватывает `$0.date.now` в `live`, вызывать `live` внутри `operation` (как в helper `client`) — зависимости захватываются при создании.
+Expected: 8 тестов PASS. Если `withDependencies` не подхватывает `$0.date.now` в `live`, вызывать `live` внутри `operation` (как в helper `client`) — зависимости захватываются при создании.
 
 - [ ] **Step 5: Commit**
 
@@ -1100,7 +1112,7 @@ git commit -m "feat: PointFreeClient with caching and session cookie"
 - Test: `Tests/PointFreeKitTests/EpisodePageParserTests.swift`
 
 **Interfaces:**
-- Produces: `Transcript { chapters: [Chapter] }`, `Chapter { slug, title, startTimestamp: Int?, blocks: [Block] }`, `Block { case timestamp(Int), speaker(String), paragraph(String), code(String), listItem(String) }`, `EpisodePage { transcript: Transcript; tocChapterCount: Int; isTruncated: Bool }`, `EpisodePageParser.parse(html: String, url: URL?) throws -> EpisodePage`, `InlineMarkdown.render(_ element: Element) throws -> String`, `Transcript.hasBody`.
+- Produces: `Transcript { chapters: [Chapter] }`, `Chapter { slug, title, startTimestamp: Int?, blocks: [Block] }`, `Block { case timestamp(Int), speaker(String), paragraph(String), code(String), listItem(String), quote(String), heading(String) }`, `EpisodePage { transcript: Transcript; tocChapterCount: Int; isTruncated: Bool }`, `EpisodePageParser.parse(html: String, url: URL?) throws -> EpisodePage`, `InlineMarkdown.render(_ element: Element) throws -> String`, `Transcript.hasBody`.
 
 Реальная разметка (классы хэшированы, опираемся на теги и атрибуты):
 ```html
@@ -1142,6 +1154,9 @@ git commit -m "feat: PointFreeClient with caching and session cookie"
   <div><strong>Stephen</strong><div><div id="t141"><a data-timestamp="141" href="#t141">2:21</a></div></div></div>
   <p>Composition paragraph.</p>
   <pre><code><span class="k">let</span> f = incr &gt;&gt;&gt; square</code></pre>
+  <blockquote><p>Quoted <code>note</code>.</p></blockquote>
+  <h3>Inner heading</h3>
+  <p>After heading.</p>
 </pf-vstack></pf-markdown></article>
 <footer><h4>Join Point-Free</h4><p>Footer text must not appear.</p></footer>
 </body></html>
@@ -1196,6 +1211,11 @@ import Testing
 
   let comp = t.chapters[1].blocks
   #expect(comp.contains(.code("let f = incr >>> square")))
+  #expect(comp.contains(.quote("Quoted `note`.")))
+  #expect(comp.contains(.heading("Inner heading")))
+  #expect(comp.contains(.paragraph("After heading.")))
+  #expect(!comp.contains(.paragraph("Quoted `note`.")))
+  #expect(t.chapters.count == 2)  // h3 внутри статьи не открывает новую главу
   #expect(t.hasBody)
   // Текст футера не попал в транскрипт
   #expect(!t.chapters.flatMap(\.blocks).contains(.paragraph("Footer text must not appear.")))
@@ -1238,6 +1258,8 @@ public struct Transcript: Equatable, Sendable {
     case paragraph(String)
     case code(String)
     case listItem(String)
+    case quote(String)
+    case heading(String)
   }
 
   public var chapters: [Chapter]
@@ -1357,7 +1379,7 @@ public enum EpisodePageParser {
       return false
     }
 
-    for node in try article.select("a[id], h4, a[data-timestamp], strong, p, pre, li") {
+    for node in try article.select("a[id], h4, h2, h3, h5, h6, a[data-timestamp], strong, p, pre, li, blockquote") {
       switch node.tagName() {
       case "a" where node.hasAttr("data-timestamp"):
         if let seconds = Int(try node.attr("data-timestamp")) { append(.timestamp(seconds)) }
@@ -1369,12 +1391,18 @@ public enum EpisodePageParser {
         guard !title.isEmpty else { continue }
         chapters.append(.init(slug: pendingSlug ?? slugify(title), title: title))
         pendingSlug = nil
+      case "h2", "h3", "h5", "h6":
+        let text = try InlineMarkdown.render(node)
+        if !text.isEmpty { append(.heading(text)) }
+      case "blockquote":
+        let text = try node.select("p").map { try InlineMarkdown.render($0) }.filter { !$0.isEmpty }.joined(separator: " ")
+        append(.quote(text.isEmpty ? try InlineMarkdown.render(node) : text))
       case "strong":
-        guard !isInside(node, ["p", "li", "h4"]) else { continue }
+        guard !isInside(node, ["p", "li", "h4", "blockquote"]) else { continue }
         let name = try node.text().trimmingCharacters(in: .whitespaces)
         if !name.isEmpty { append(.speaker(name)) }
       case "p":
-        guard !isInside(node, ["li"]) else { continue }
+        guard !isInside(node, ["li", "blockquote"]) else { continue }
         let text = try InlineMarkdown.render(node)
         if !text.isEmpty { append(.paragraph(text)) }
       case "pre":
@@ -1433,7 +1461,9 @@ git commit -m "feat: parse episode page transcript into chapters and blocks"
 - Test: `Tests/PointFreeKitTests/SearchPageParserTests.swift`
 
 **Interfaces:**
-- Produces: `SearchResult { slug, number: Int?, title, snippet: String?, hits: [Hit] }`, `SearchResult.Hit { title, timestamp: Int }`, `SearchPageParser.parse(html:url:) throws -> [SearchResult]`.
+- Produces: `SearchResult { slug, number: Int?, title, snippet: String?, hits: [Hit] }`, `SearchResult.Hit { title, timestamp: Int }`, `SearchPage { total: Int?; results: [SearchResult] }`, `SearchPageParser.parse(html:url:) throws -> SearchPage`.
+
+Сайт показывает не больше ~50 карточек и не имеет пагинации, но пишет строку «80 videos match Sendable». Её число — `total`; рендер сообщает «showing N of total».
 
 Реальная разметка карточки: `<h4><a href="/episodes/ep381-designing-for-isolation-naively">Designing for Isolation: Naively</a></h4>`, затем `<p>… <mark>Sendable</mark> …</p>`, затем несколько `<a href="/episodes/ep381-…#t349">Remaining non-Sendable a bit longer… (5:49)</a>`. Общий контейнер карточки — ближайший предок `h4`, внутри которого ровно одна ссылка на эпизод без `#`.
 
@@ -1442,6 +1472,7 @@ git commit -m "feat: parse episode page transcript into chapters and blocks"
 ```html
 <!doctype html><html><body>
 <h1>Search: Sendable</h1>
+<p>80 videos match Sendable</p>
 <div class="results">
   <div class="card">
     <h4><a href="/episodes/ep381-designing-for-isolation-naively">Designing for Isolation: Naively</a></h4>
@@ -1465,7 +1496,9 @@ import Testing
 @testable import PointFreeKit
 
 @Test func parsesSearchCards() throws {
-  let results = try SearchPageParser.parse(html: fixtureString("search.html"), url: nil)
+  let page = try SearchPageParser.parse(html: fixtureString("search.html"), url: nil)
+  #expect(page.total == 80)
+  let results = page.results
   #expect(results.count == 2)
   #expect(results[0].slug == "ep381-designing-for-isolation-naively")
   #expect(results[0].number == 381)
@@ -1481,8 +1514,9 @@ import Testing
 }
 
 @Test func emptySearchGivesNoResults() throws {
-  let results = try SearchPageParser.parse(html: "<html><body><h1>Search</h1><p>No results</p></body></html>", url: nil)
-  #expect(results.isEmpty)
+  let page = try SearchPageParser.parse(html: "<html><body><h1>Search</h1><p>No results</p></body></html>", url: nil)
+  #expect(page.results.isEmpty)
+  #expect(page.total == nil)
 }
 ```
 
@@ -1504,6 +1538,11 @@ public struct SearchResult: Equatable, Sendable {
   public var snippet: String?
   public var hits: [Hit]
 }
+
+public struct SearchPage: Equatable, Sendable {
+  public var total: Int?
+  public var results: [SearchResult]
+}
 ```
 
 `Sources/PointFreeKit/Parsing/SearchPageParser.swift`:
@@ -1512,8 +1551,10 @@ import Foundation
 import SwiftSoup
 
 public enum SearchPageParser {
-  public static func parse(html: String, url: URL?) throws -> [SearchResult] {
+  public static func parse(html: String, url: URL?) throws -> SearchPage {
     let doc = try SwiftSoup.parse(html)
+    let bodyText = try doc.body()?.text() ?? ""
+    let total = bodyText.firstMatch(of: /(\d+) videos? match/).flatMap { Int($0.1) }
     var results: [SearchResult] = []
     for titleLink in try doc.select("h4 > a[href^=/episodes/]") {
       let href = try titleLink.attr("href")
@@ -1530,7 +1571,7 @@ public enum SearchPageParser {
       }
       results.append(SearchResult(slug: slug, number: EpisodeRef.parse(slug)?.number, title: title, snippet: snippet, hits: hits))
     }
-    return results
+    return SearchPage(total: total, results: results)
   }
 
   /// Ближайший предок, в котором ровно одна ссылка на эпизод без "#".
@@ -1750,7 +1791,7 @@ git commit -m "feat: parse collections, sections and section episodes"
 
 **Interfaces:**
 - Consumes: все модели из Tasks 2, 7, 8, 9.
-- Produces: `MarkdownRenderer.episode(detail: EpisodeDetail, transcript: Transcript, section: SectionRef?) throws(PointFreeError) -> String`, `MarkdownRenderer.search(query: SearchQuery, results: [SearchResult], episodes: [Int: EpisodeSummary]) -> String`, `MarkdownRenderer.episodeList(_ episodes: [EpisodeSummary]) -> String`, `MarkdownRenderer.collections(_:) -> String`, `MarkdownRenderer.collection(title:slug:sections:) -> String`, `MarkdownRenderer.section(collectionSlug:sectionSlug:title:groups:) -> String`.
+- Produces: `MarkdownRenderer.episode(detail: EpisodeDetail, transcript: Transcript, section: SectionRef?) throws(PointFreeError) -> String`, `MarkdownRenderer.search(query: SearchQuery, page: SearchPage, episodes: [Int: EpisodeSummary]) -> String`, `MarkdownRenderer.blogPost(_ post: BlogPost, blocks: [Transcript.Block]) -> String`, `MarkdownRenderer.blogList(_ posts: [BlogPost]) -> String`, `MarkdownRenderer.episodeList(_ episodes: [EpisodeSummary]) -> String`, `MarkdownRenderer.collections(_:) -> String`, `MarkdownRenderer.collection(title:slug:sections:) -> String`, `MarkdownRenderer.section(collectionSlug:sectionSlug:title:groups:) -> String`.
 
 - [ ] **Step 1: Тесты**
 
@@ -1771,7 +1812,7 @@ private func transcript() -> Transcript {
     .init(slug: "introduction", title: "Introduction", startTimestamp: 5, blocks: [
       .speaker("Brandon"), .timestamp(5), .paragraph("Hello `x`."), .code("let a = 1\n"), .listItem("Item"),
     ]),
-    .init(slug: "next-time", title: "Next time", startTimestamp: 902, blocks: [.timestamp(902), .paragraph("Bye.")]),
+    .init(slug: "next-time", title: "Next time", startTimestamp: 902, blocks: [.timestamp(902), .paragraph("Bye."), .quote("Note."), .heading("Sub")]),
   ])
 }
 
@@ -1812,6 +1853,10 @@ private func transcript() -> Transcript {
 
   Bye.
 
+  > Note.
+
+  ### Sub
+
   """
   #expect(md == expected)
 }
@@ -1834,8 +1879,8 @@ private func transcript() -> Transcript {
                               hits: [.init(title: "Hit", timestamp: 349)])]
   let summary = EpisodeSummary(id: 381, sequence: 381, title: "T", blurb: "", length: 1008,
                                publishedAt: Date(timeIntervalSinceReferenceDate: 812246400), subscriberOnly: true, image: "")
-  let md = MarkdownRenderer.search(query: SearchQuery(query: "Sendable", scope: .dialogue), results: results, episodes: [381: summary])
-  #expect(md.hasPrefix("# Search: Sendable (scope: dialogue)\n\n1 episode(s) found.\n\n"))
+  let md = MarkdownRenderer.search(query: SearchQuery(query: "Sendable", scope: .dialogue), page: SearchPage(total: 80, results: results), episodes: [381: summary])
+  #expect(md.hasPrefix("# Search: Sendable (scope: dialogue)\n\nShowing 1 of 80 matching video(s). The site returns at most ~50; narrow with `scope` or `access` to see the rest.\n\n"))
   #expect(md.contains("## #381: T (Members only)\n"))
   #expect(md.contains("https://www.pointfree.co/episodes/ep381-x\n"))
   #expect(md.contains("> … Sendable …"))
@@ -1843,8 +1888,25 @@ private func transcript() -> Transcript {
 }
 
 @Test func rendersEmptySearch() {
-  let md = MarkdownRenderer.search(query: SearchQuery(query: "zzz"), results: [], episodes: [:])
+  let md = MarkdownRenderer.search(query: SearchQuery(query: "zzz"), page: SearchPage(total: nil, results: []), episodes: [:])
   #expect(md.contains("No episodes matched"))
+}
+
+@Test func rendersCompleteSearchWithoutWarning() {
+  let r = [SearchResult(slug: "ep1-x", number: 1, title: "T", snippet: nil, hits: [])]
+  let md = MarkdownRenderer.search(query: SearchQuery(query: "q"), page: SearchPage(total: 1, results: r), episodes: [:])
+  #expect(md.contains("1 matching video(s).\n"))
+  #expect(!md.contains("narrow with"))
+}
+
+@Test func rendersBlogPostAndList() {
+  let post = BlogPost(number: 228, slug: "228-lazystate-1-0-now-available-to-everyone", title: "LazyState 1.0",
+                      url: URL(string: "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")!,
+                      updated: Date(timeIntervalSince1970: 1_789_300_000), contentHTML: "")
+  let md = MarkdownRenderer.blogPost(post, blocks: [.paragraph("Hi"), .code("let x = 1\n"), .heading("Why")])
+  #expect(md.hasPrefix("# LazyState 1.0\n\n- Published: 2026-09-13\n- URL: https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone\n\nHi\n\n```swift\nlet x = 1\n```\n\n### Why\n"))
+  let list = MarkdownRenderer.blogList([post])
+  #expect(list.contains("- #228 LazyState 1.0 — 2026-09-13 · https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone"))
 }
 
 @Test func rendersEpisodeListAndCollections() {
@@ -1918,6 +1980,8 @@ public enum MarkdownRenderer {
         case .paragraph(let text): out += text + "\n\n"
         case .code(let code): out += "```swift\n\(code.hasSuffix("\n") ? code : code + "\n")```\n\n"
         case .listItem(let text): out += "- \(text)\n"
+        case .quote(let text): out += "> \(text)\n\n"
+        case .heading(let text): out += "### \(text)\n\n"
         }
       }
       if case .listItem = chapter.blocks.last { out += "\n" }
@@ -1925,18 +1989,53 @@ public enum MarkdownRenderer {
     return out
   }
 
+  /// Общий рендер блоков без глав (блог).
+  static func blocks(_ blocks: [Transcript.Block], base: String) -> String {
+    var out = ""
+    for block in blocks {
+      switch block {
+      case .timestamp(let s): out += tsLink(base, s) + "\n\n"
+      case .speaker(let name): out += "**\(name)**\n\n"
+      case .paragraph(let text): out += text + "\n\n"
+      case .code(let code): out += "```swift\n\(code.hasSuffix("\n") ? code : code + "\n")```\n\n"
+      case .listItem(let text): out += "- \(text)\n"
+      case .quote(let text): out += "> \(text)\n\n"
+      case .heading(let text): out += "### \(text)\n\n"
+      }
+    }
+    if case .listItem = blocks.last { out += "\n" }
+    return out
+  }
+
+  public static func blogPost(_ post: BlogPost, blocks: [Transcript.Block]) -> String {
+    var out = "# \(post.title)\n\n- Published: \(date(post.updated))\n- URL: \(post.url.absoluteString)\n\n"
+    out += Self.blocks(blocks, base: post.url.absoluteString)
+    return out
+  }
+
+  public static func blogList(_ posts: [BlogPost]) -> String {
+    var out = "# Point-Free Pointers blog (\(posts.count))\n\nCall `fetchBlogPost` with a post number, slug or URL to read one.\n\n"
+    for p in posts { out += "- #\(p.number) \(p.title) — \(date(p.updated)) · \(p.url.absoluteString)\n" }
+    return out
+  }
+
   static func sectionText(_ ref: SectionRef) -> String {
     switch ref { case .slug(let s): return s; case .timestamp(let t): return "t\(t)" }
   }
 
-  public static func search(query: SearchQuery, results: [SearchResult], episodes: [Int: EpisodeSummary]) -> String {
+  public static func search(query: SearchQuery, page: SearchPage, episodes: [Int: EpisodeSummary]) -> String {
+    let results = page.results
     var out = "# Search: \(query.query)"
     if let scope = query.scope { out += " (scope: \(scope.rawValue))" }
     out += "\n\n"
     guard !results.isEmpty else {
       return out + "No episodes matched. Try a broader query, another `scope` (dialogue, code, titles), or drop `access`.\n"
     }
-    out += "\(results.count) episode(s) found.\n\n"
+    if let total = page.total, total > results.count {
+      out += "Showing \(results.count) of \(total) matching video(s). The site returns at most ~50; narrow with `scope` or `access` to see the rest.\n\n"
+    } else {
+      out += "\(results.count) matching video(s).\n\n"
+    }
     for r in results {
       let summary = r.number.flatMap { episodes[$0] }
       let number = r.number.map { "#\($0): " } ?? ""
@@ -1999,7 +2098,251 @@ git commit -m "feat: markdown rendering for episodes, search, lists and collecti
 
 ---
 
-### Task 11: Инструменты MCP (логика без транспорта)
+### Task 11: Блог через Atom-фид
+
+**Files:**
+- Create: `Sources/PointFreeKit/Models/BlogPost.swift`
+- Create: `Sources/PointFreeKit/Parsing/BlogFeedParser.swift`
+- Create: `Sources/PointFreeKit/Parsing/BlogContentParser.swift`
+- Create: `Tests/PointFreeKitTests/Fixtures/blog-atom.xml`
+- Test: `Tests/PointFreeKitTests/BlogTests.swift`
+
+**Interfaces:**
+- Consumes: `InlineMarkdown.render`, `InlineMarkdown.rawText`, `Transcript.Block`, `PointFreeError`.
+- Produces: `BlogPost { number: Int; slug: String; title: String; url: URL; updated: Date; contentHTML: String }`, `BlogPostRef { number: Int }` с `parse(_:)`, `BlogFeedParser.parse(xml: String) throws -> [BlogPost]`, `BlogContentParser.blocks(html: String) throws -> [Transcript.Block]`.
+
+Фид `https://www.pointfree.co/blog/feed/atom.xml` публичный, 230 записей, каждая с полным HTML в `<content type="html"><![CDATA[…]]></content>`. Форма записи:
+```xml
+<entry><title>LazyState 1.0: Now available to everyone</title>
+<link href="https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone"></link>
+<updated>2026-09-14T00:00:00Z</updated>
+<id>https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone</id>
+<content type="html"><![CDATA[<div class=" md-ctn"><p>…</p><pre><code>…</code></pre><h2>…</h2><ul><li>…</li></ul></div>]]></content></entry>
+```
+Номер поста — ведущее число slug. Страницы блога не запрашиваются вовсе.
+
+- [ ] **Step 1: Фикстура `blog-atom.xml`**
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+<title>Point-Free Pointers</title>
+<entry><title>Announcing Point-Free Pointers!</title><link href="https://www.pointfree.co/blog/posts/1-announcing-point-free-pointers"></link><updated>2018-04-23T04:01:02Z</updated><id>https://www.pointfree.co/blog/posts/1-announcing-point-free-pointers</id><content type="html"><![CDATA[<div class=" md-ctn"><p>First post.</p></div>]]></content></entry>
+<entry><title>LazyState 1.0: Now available to everyone</title><link href="https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone"></link><updated>2026-09-14T00:00:00Z</updated><id>https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone</id><content type="html"><![CDATA[<div class=" md-ctn"><p>We are excited to announce <a href="https://github.com/pointfreeco/swiftui-lazy-state">LazyState</a> <strong>1.0</strong>.</p><h2>Usage</h2><pre><code>@LazyState var model = Model()
+</code></pre><ul><li>One</li><li>Two with <code>code</code></li></ul><blockquote><p>Quoted.</p></blockquote></div>]]></content></entry>
+</feed>
+```
+
+- [ ] **Step 2: Тесты**
+
+```swift
+import Foundation
+import Testing
+@testable import PointFreeKit
+
+@Test func parsesAtomFeedEntries() throws {
+  let posts = try BlogFeedParser.parse(xml: fixtureString("blog-atom.xml"))
+  #expect(posts.count == 2)
+  let post = try #require(posts.first { $0.number == 228 })
+  #expect(post.slug == "228-lazystate-1-0-now-available-to-everyone")
+  #expect(post.title == "LazyState 1.0: Now available to everyone")
+  #expect(post.url.absoluteString == "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")
+  #expect(post.updated == Date(timeIntervalSince1970: 1_789_344_000))
+  #expect(post.contentHTML.contains("<pre><code>@LazyState"))
+}
+
+@Test func convertsPostContentToBlocks() throws {
+  let post = try #require(try BlogFeedParser.parse(xml: fixtureString("blog-atom.xml")).first { $0.number == 228 })
+  let blocks = try BlogContentParser.blocks(html: post.contentHTML)
+  #expect(blocks == [
+    .paragraph("We are excited to announce [LazyState](https://github.com/pointfreeco/swiftui-lazy-state) **1.0**."),
+    .heading("Usage"),
+    .code("@LazyState var model = Model()\n"),
+    .listItem("One"),
+    .listItem("Two with `code`"),
+    .quote("Quoted."),
+  ])
+}
+
+@Test(arguments: [
+  ("228", 228), ("228-lazystate-1-0-now-available-to-everyone", 228),
+  ("https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone", 228), ("/blog/posts/1-announcing", 1),
+])
+func parsesBlogPostRefs(raw: String, number: Int) throws {
+  #expect(try #require(BlogPostRef.parse(raw)).number == number)
+}
+
+@Test(arguments: ["", "lazystate", "https://www.pointfree.co/episodes/ep1-functions"])
+func rejectsBadBlogRefs(raw: String) {
+  #expect(BlogPostRef.parse(raw) == nil)
+}
+
+@Test func malformedFeedIsStructureChange() {
+  #expect(throws: PointFreeError.self) {
+    _ = try BlogFeedParser.parse(xml: "<html>not a feed</html>")
+  }
+}
+```
+
+- [ ] **Step 3: Запустить — не компилируется**
+
+Run: `swift test --filter BlogTests`
+
+- [ ] **Step 4: Реализация**
+
+`Sources/PointFreeKit/Models/BlogPost.swift`:
+```swift
+import Foundation
+
+public struct BlogPost: Equatable, Sendable {
+  public var number: Int
+  public var slug: String
+  public var title: String
+  public var url: URL
+  public var updated: Date
+  public var contentHTML: String
+
+  public init(number: Int, slug: String, title: String, url: URL, updated: Date, contentHTML: String) {
+    self.number = number; self.slug = slug; self.title = title; self.url = url; self.updated = updated; self.contentHTML = contentHTML
+  }
+}
+
+public struct BlogPostRef: Equatable, Sendable {
+  public var number: Int
+
+  /// "228", "228-slug", "https://www.pointfree.co/blog/posts/228-slug", "/blog/posts/228-slug"
+  public static func parse(_ raw: String) -> BlogPostRef? {
+    var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !text.isEmpty else { return nil }
+    if let q = text.firstIndex(where: { $0 == "?" || $0 == "#" }) { text = String(text[..<q]) }
+    if text.contains("/") {
+      guard let range = text.range(of: "/blog/posts/") else { return nil }
+      text = String(text[range.upperBound...])
+    }
+    while text.hasSuffix("/") { text.removeLast() }
+    guard let match = text.wholeMatch(of: /(\d+)(?:-[A-Za-z0-9-]*)?/), let number = Int(match.1) else { return nil }
+    return BlogPostRef(number: number)
+  }
+}
+```
+
+`Sources/PointFreeKit/Parsing/BlogFeedParser.swift`:
+```swift
+import Foundation
+
+public enum BlogFeedParser {
+  public static func parse(xml: String) throws -> [BlogPost] {
+    let delegate = AtomDelegate()
+    let parser = XMLParser(data: Data(xml.utf8))
+    parser.delegate = delegate
+    guard parser.parse(), delegate.sawFeed else {
+      throw PointFreeError.structureChanged("blog atom feed", URL(string: "https://www.pointfree.co/blog/feed/atom.xml"))
+    }
+    return delegate.posts
+  }
+
+  private final class AtomDelegate: NSObject, XMLParserDelegate {
+    var posts: [BlogPost] = []
+    var sawFeed = false
+    private var inEntry = false
+    private var currentElement = ""
+    private var title = "", link = "", updated = "", content = ""
+    private static let dateFormatter = ISO8601DateFormatter()
+
+    func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
+      currentElement = name
+      switch name {
+      case "feed": sawFeed = true
+      case "entry": inEntry = true; title = ""; link = ""; updated = ""; content = ""
+      case "link" where inEntry: link = attributes["href"] ?? link
+      default: break
+      }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+      guard inEntry else { return }
+      switch currentElement {
+      case "title": title += string
+      case "updated": updated += string
+      case "content": content += string
+      default: break
+      }
+    }
+
+    func parser(_ parser: XMLParser, foundCDATA CDATABlock: Data) {
+      guard inEntry, currentElement == "content" else { return }
+      content += String(decoding: CDATABlock, as: UTF8.self)
+    }
+
+    func parser(_ parser: XMLParser, didEndElement name: String, namespaceURI: String?, qualifiedName: String?) {
+      currentElement = ""
+      guard name == "entry", inEntry else { return }
+      inEntry = false
+      guard let url = URL(string: link.trimmingCharacters(in: .whitespaces)),
+            let slug = url.pathComponents.last,
+            let ref = BlogPostRef.parse(slug),
+            let date = Self.dateFormatter.date(from: updated.trimmingCharacters(in: .whitespacesAndNewlines))
+      else { return }
+      posts.append(BlogPost(number: ref.number, slug: slug, title: title.trimmingCharacters(in: .whitespacesAndNewlines),
+                            url: url, updated: date, contentHTML: content))
+    }
+  }
+}
+```
+
+`Sources/PointFreeKit/Parsing/BlogContentParser.swift`:
+```swift
+import Foundation
+import SwiftSoup
+
+public enum BlogContentParser {
+  public static func blocks(html: String) throws -> [Transcript.Block] {
+    let doc = try SwiftSoup.parseBodyFragment(html)
+    var blocks: [Transcript.Block] = []
+    for node in try doc.body()!.select("h1, h2, h3, h4, h5, h6, p, pre, li, blockquote") {
+      let insideQuoteOrItem = node.parents().contains { ["li", "blockquote"].contains($0.tagName()) }
+      switch node.tagName() {
+      case "h1", "h2", "h3", "h4", "h5", "h6":
+        let text = try InlineMarkdown.render(node)
+        if !text.isEmpty { blocks.append(.heading(text)) }
+      case "p":
+        guard !insideQuoteOrItem else { continue }
+        let text = try InlineMarkdown.render(node)
+        if !text.isEmpty { blocks.append(.paragraph(text)) }
+      case "pre":
+        let code = try node.select("code").first() ?? node
+        var text = InlineMarkdown.rawText(code)
+        if !text.hasSuffix("\n") && text.contains("\n") { text += "\n" }
+        blocks.append(.code(text))
+      case "li":
+        let text = try InlineMarkdown.render(node)
+        if !text.isEmpty { blocks.append(.listItem(text)) }
+      case "blockquote":
+        let text = try node.select("p").map { try InlineMarkdown.render($0) }.filter { !$0.isEmpty }.joined(separator: " ")
+        blocks.append(.quote(text.isEmpty ? try InlineMarkdown.render(node) : text))
+      default: break
+      }
+    }
+    return blocks
+  }
+}
+```
+
+- [ ] **Step 5: Тесты проходят**
+
+Run: `swift test --filter BlogTests`
+Expected: PASS. Дата `1_789_344_000` = 2026-09-14T00:00:00Z. Если `XMLParser` отдаёт CDATA через `foundCharacters`, а не `foundCDATA`, код уже собирает оба; проверить, что HTML не экранирован дважды.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add Sources/PointFreeKit/Models/BlogPost.swift Sources/PointFreeKit/Parsing/BlogFeedParser.swift Sources/PointFreeKit/Parsing/BlogContentParser.swift Tests/PointFreeKitTests/Fixtures/blog-atom.xml Tests/PointFreeKitTests/BlogTests.swift
+git commit -m "feat: blog posts from the Atom feed"
+```
+
+---
+
+### Task 12: Инструменты MCP (логика без транспорта)
 
 **Files:**
 - Create: `Sources/PointFreeKit/Tools/ToolArguments.swift`
@@ -2010,7 +2353,10 @@ git commit -m "feat: markdown rendering for episodes, search, lists and collecti
 
 **Interfaces:**
 - Consumes: `PointFreeClient`, `SessionStore`, парсеры, `MarkdownRenderer`.
+- Consumes также: `BlogFeedParser`, `BlogContentParser`, `BlogPost`, `BlogPostRef` из Task 11.
 - Produces: `ToolArguments` (Decodable из JSON-объекта; `string(_:)`, `int(_:)`, `bool(_:)`), `ToolDefinition { name, description, inputSchemaJSON: String }`, `ToolDefinitions.all: [ToolDefinition]`, `ToolOutput { text, isError }`, `ToolCatalog.call(name: String, arguments: ToolArguments) async -> ToolOutput`, `LoginLauncher.run() async throws -> LoginOutcome` (dependency `\.loginLauncher`), `LoginOutcome { case success, cancelled, failed(String) }`.
+
+Порядок: Task 11 (блог) выполняется до этой задачи, потому что каталог инструментов ссылается на парсеры блога.
 
 - [ ] **Step 1: Тесты**
 
@@ -2029,7 +2375,7 @@ private func detailJSON() throws -> EpisodeDetail {
 }
 
 @Test func toolDefinitionsAreValidJSONSchemas() throws {
-  #expect(ToolDefinitions.all.map(\.name) == ["searchPointFree", "fetchEpisode", "listEpisodes", "fetchCollection", "login"])
+  #expect(ToolDefinitions.all.map(\.name) == ["searchPointFree", "fetchEpisode", "listEpisodes", "fetchCollection", "listBlogPosts", "fetchBlogPost", "login"])
   for def in ToolDefinitions.all {
     let obj = try JSONSerialization.jsonObject(with: Data(def.inputSchemaJSON.utf8)) as? [String: Any]
     #expect(obj?["type"] as? String == "object", "\(def.name)")
@@ -2158,6 +2504,29 @@ private func detailJSON() throws -> EpisodeDetail {
     $0.pointFreeClient.sectionPage = { slug, section in #expect(slug == "composable-architecture" && section == "testing"); return try fixtureString("section.html") }
   } operation: { await catalog.call(name: "fetchCollection", arguments: try args(#"{"slug":"composable-architecture","section":"testing"}"#)) }
   #expect(episodes.text.contains("#82"))
+}
+
+@Test func blogToolsListAndFetchFromFeed() async throws {
+  let catalog = ToolCatalog()
+  let list = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+  } operation: { await catalog.call(name: "listBlogPosts", arguments: try args(#"{"filter":"lazystate","limit":5}"#)) }
+  #expect(!list.isError)
+  #expect(list.text.contains("#228 LazyState 1.0"))
+  #expect(!list.text.contains("#1 Announcing"))
+
+  let post = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+  } operation: { await catalog.call(name: "fetchBlogPost", arguments: try args(#"{"post":"228"}"#)) }
+  #expect(!post.isError)
+  #expect(post.text.hasPrefix("# LazyState 1.0"))
+  #expect(post.text.contains("```swift"))
+
+  let missing = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+  } operation: { await catalog.call(name: "fetchBlogPost", arguments: try args(#"{"post":"999"}"#)) }
+  #expect(missing.isError)
+  #expect(missing.text.contains("999"))
 }
 
 @Test func loginToolReportsExistingValidSession() async throws {
@@ -2310,6 +2679,25 @@ public enum ToolDefinitions {
       """
     ),
     ToolDefinition(
+      name: "listBlogPosts",
+      description: "List posts from the Point-Free Pointers blog (library release announcements, migration guides, monthly recaps), newest first. Optional title filter. No login needed.",
+      inputSchemaJSON: """
+      {"type":"object","properties":{
+        "filter":{"type":"string","description":"Case-insensitive substring to match in the post title"},
+        "limit":{"type":"integer","description":"Maximum number of posts to return (default 30)"}
+      }}
+      """
+    ),
+    ToolDefinition(
+      name: "fetchBlogPost",
+      description: "Fetch a Point-Free Pointers blog post as markdown with code blocks. Accepts a post number (228), slug (228-lazystate-1-0-now-available-to-everyone) or URL. No login needed.",
+      inputSchemaJSON: """
+      {"type":"object","properties":{
+        "post":{"type":"string","description":"Post number, slug, or pointfree.co/blog/posts URL"}
+      },"required":["post"]}
+      """
+    ),
+    ToolDefinition(
       name: "login",
       description: "Sign in to pointfree.co with GitHub to access members-only transcripts. Opens a browser window on this Mac; the user completes the login there. Reports the current session if already signed in; pass force=true to sign in again.",
       inputSchemaJSON: """
@@ -2407,6 +2795,8 @@ public struct ToolCatalog: Sendable {
       case "fetchEpisode": return try await fetchEpisode(arguments)
       case "listEpisodes": return try await listEpisodes(arguments)
       case "fetchCollection": return try await fetchCollection(arguments)
+      case "listBlogPosts": return try await listBlogPosts(arguments)
+      case "fetchBlogPost": return try await fetchBlogPost(arguments)
       case "login": return try await login(arguments)
       default: return ToolOutput(text: "Unknown tool: \(name)", isError: true)
       }
@@ -2424,10 +2814,10 @@ public struct ToolCatalog: Sendable {
     let sort = try enumArg(args, "sort", SearchQuery.Sort.self)
     let q = SearchQuery(query: query, scope: scope, access: access, sort: sort)
     let html = try await client.search(q)
-    let results = try SearchPageParser.parse(html: html, url: q.url)
+    let page = try SearchPageParser.parse(html: html, url: q.url)
     let episodes = (try? await client.episodes()) ?? []
     let byID = Dictionary(uniqueKeysWithValues: episodes.map { ($0.id, $0) })
-    return ToolOutput(text: MarkdownRenderer.search(query: q, results: results, episodes: byID))
+    return ToolOutput(text: MarkdownRenderer.search(query: q, page: page, episodes: byID))
   }
 
   func fetchEpisode(_ args: ToolArguments) async throws -> ToolOutput {
@@ -2479,6 +2869,28 @@ public struct ToolCatalog: Sendable {
     return ToolOutput(text: MarkdownRenderer.section(collectionSlug: slug, sectionSlug: section, title: s.title, groups: s.groups))
   }
 
+  func listBlogPosts(_ args: ToolArguments) async throws -> ToolOutput {
+    let limit = max(1, args.int("limit") ?? 30)
+    var posts = try BlogFeedParser.parse(xml: try await client.blogFeed()).sorted { $0.number > $1.number }
+    if let filter = args.string("filter")?.lowercased() {
+      posts = posts.filter { $0.title.lowercased().contains(filter) }
+    }
+    return ToolOutput(text: MarkdownRenderer.blogList(Array(posts.prefix(limit))))
+  }
+
+  func fetchBlogPost(_ args: ToolArguments) async throws -> ToolOutput {
+    guard let raw = args.string("post") else { throw PointFreeError.invalidArgument("`post` is required") }
+    guard let ref = BlogPostRef.parse(raw) else {
+      throw PointFreeError.invalidArgument("`post` must be a number (228), a slug (228-…) or a pointfree.co blog URL; got \"\(raw)\"")
+    }
+    let posts = try BlogFeedParser.parse(xml: try await client.blogFeed())
+    guard let post = posts.first(where: { $0.number == ref.number }) else {
+      throw PointFreeError.invalidArgument("Blog post \(ref.number) not found in the feed")
+    }
+    let blocks = try BlogContentParser.blocks(html: post.contentHTML)
+    return ToolOutput(text: MarkdownRenderer.blogPost(post, blocks: blocks))
+  }
+
   func login(_ args: ToolArguments) async throws -> ToolOutput {
     let force = args.bool("force") ?? false
     if !force, let session = try sessionStore.load(), !session.isExpired(now: now),
@@ -2511,18 +2923,18 @@ public struct ToolCatalog: Sendable {
 - [ ] **Step 4: Тесты проходят**
 
 Run: `swift test --filter ToolCatalogTests`
-Expected: 15 тестов PASS. Если `@Dependency` внутри `struct ToolCatalog` захватывает live-значения в момент `init()` — создавать `ToolCatalog()` внутри `operation:` (как в тестах) и в `Serve` создавать после `prepareDependencies`.
+Expected: 16 тестов PASS. Если `@Dependency` внутри `struct ToolCatalog` захватывает live-значения в момент `init()` — создавать `ToolCatalog()` внутри `operation:` (как в тестах) и в `Serve` создавать после `prepareDependencies`.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add Sources/PointFreeKit/Tools Tests/PointFreeKitTests/ToolCatalogTests.swift
-git commit -m "feat: MCP tool catalog with search, episode, list, collection and login"
+git commit -m "feat: MCP tool catalog with search, episode, list, collection, blog and login"
 ```
 
 ---
 
-### Task 12: Исполняемый сервер: `serve`, `status`, `logout`
+### Task 13: Исполняемый сервер: `serve`, `status`, `logout`
 
 **Files:**
 - Modify: `Sources/PointFreeMCP/PointFreeMCPCommand.swift`
@@ -2533,7 +2945,7 @@ git commit -m "feat: MCP tool catalog with search, episode, list, collection and
 
 **Interfaces:**
 - Consumes: `ToolDefinitions.all`, `ToolCatalog`, `ToolArguments`, `SessionStore`, `PointFreeClient`.
-- Produces: бинарь `pointfree-mcp` с подкомандами `serve` (по умолчанию), `status`, `logout`; `login` добавляется в Task 13.
+- Produces: бинарь `pointfree-mcp` с подкомандами `serve` (по умолчанию), `status`, `logout`; `login` добавляется в Task 14.
 
 - [ ] **Step 1: Корневая команда**
 
@@ -2689,7 +3101,7 @@ printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchEpisode","arguments":{"episode":"1","section":"introduction"}}}' \
   | .build/debug/pointfree-mcp serve
 ```
-Expected: ответ содержит `# Episode #1: Functions` и одну главу. `pointfree-mcp status` печатает «Not signed in».
+Expected: ответ содержит `# Episode #1: Functions` и одну главу. `pointfree-mcp status` печатает «Not signed in». Аналогичный вызов `{"name":"fetchBlogPost","arguments":{"post":"228"}}` возвращает пост с блоками кода.
 
 - [ ] **Step 6: Commit**
 
@@ -2700,7 +3112,7 @@ git commit -m "feat: stdio MCP server with serve, status and logout commands"
 
 ---
 
-### Task 13: Окно входа (AppKit + WKWebView) и команда `login`
+### Task 14: Окно входа (AppKit + WKWebView) и команда `login`
 
 **Files:**
 - Create: `Sources/PointFreeMCP/LoginWindow/LoginWindowController.swift`
@@ -2881,7 +3293,7 @@ git commit -m "feat: GitHub login via WKWebView window and login command"
 
 ---
 
-### Task 14: Живые тесты, README и подключение к Claude Code
+### Task 15: Живые тесты, README и подключение к Claude Code
 
 **Files:**
 - Create: `Tests/PointFreeKitTests/LiveTests.swift`
@@ -2904,9 +3316,15 @@ private let live = ProcessInfo.processInfo.environment["POINTFREE_LIVE"] == "1"
   #expect(episodes.count > 300)
 
   let html = try await client.search(SearchQuery(query: "Sendable", scope: .dialogue))
-  let results = try SearchPageParser.parse(html: html, url: nil)
-  #expect(!results.isEmpty)
-  #expect(results.allSatisfy { !$0.hits.isEmpty })
+  let search = try SearchPageParser.parse(html: html, url: nil)
+  #expect(!search.results.isEmpty)
+  #expect(search.total ?? 0 >= search.results.count)
+  #expect(search.results.allSatisfy { !$0.hits.isEmpty })
+
+  let posts = try BlogFeedParser.parse(xml: try await client.blogFeed())
+  #expect(posts.count > 200)
+  let latest = try #require(posts.max { $0.number < $1.number })
+  #expect(!(try BlogContentParser.blocks(html: latest.contentHTML)).isEmpty)
 
   let page = try EpisodePageParser.parse(html: try await client.episodePage("ep1-functions"), url: nil)
   #expect(page.transcript.chapters.count == 7)
@@ -2942,7 +3360,7 @@ Expected: обычный прогон зелёный; живой прогон з
 swift build -c release
 claude mcp add pointfree -- "$PWD/.build/release/pointfree-mcp" serve
 ```
-команды `login`, `status`, `logout`; список инструментов с примерами вызовов; примечание про 7-дневную сессию и инструмент `login`; раздел «Лицензия и контент»: код MIT, транскрипты и видео принадлежат Point-Free, сервер получает их только по личной сессии пользователя, не кэширует на диске и не предназначен для перераспространения контента; кэш в памяти на 1 час.
+команды `login`, `status`, `logout`; список семи инструментов с примерами вызовов; примечание про 7-дневную сессию и инструмент `login`; примечание, что поиск сайта отдаёт не больше ~50 карточек; раздел «Лицензия и контент»: код MIT, транскрипты и видео принадлежат Point-Free, блог под CC BY-NC-SA 4.0, сервер получает контент только по запросу и, для платного, по личной сессии пользователя, не кэширует на диске и не предназначен для перераспространения; кэш в памяти на 1 час.
 
 - [ ] **Step 3: Подключить к Claude Code и проверить**
 
@@ -2950,7 +3368,7 @@ claude mcp add pointfree -- "$PWD/.build/release/pointfree-mcp" serve
 swift build -c release
 claude mcp add pointfree -- "$PWD/.build/release/pointfree-mcp" serve
 ```
-В новой сессии Claude Code: «найди в Point-Free, как тестировать эффекты в TCA» → ожидается вызов `searchPointFree`, затем `fetchEpisode` с `section`. Проверить, что ответы приходят в markdown и что после `logout` инструмент `login` открывает окно.
+В новой сессии Claude Code: «найди в Point-Free, как тестировать эффекты в TCA» → ожидается вызов `searchPointFree`, затем `fetchEpisode` с `section`. «Что нового в LazyState 1.0?» → `listBlogPosts` с filter и `fetchBlogPost`. Проверить, что ответы приходят в markdown и что после `logout` инструмент `login` открывает окно.
 
 - [ ] **Step 4: Commit**
 
@@ -2963,10 +3381,10 @@ git commit -m "docs: README, live tests behind POINTFREE_LIVE"
 
 ## Self-review
 
-**Spec coverage.** Инструменты: `searchPointFree` (Task 8, 10, 11), `fetchEpisode` с `section` и ошибками входа (Task 7, 10, 11), `listEpisodes` (Task 2, 10, 11), `fetchCollection` с `slug`/`section` (Task 9, 10, 11), `login` (Task 11, 13). Авторизация через WKWebView, файл 0600, `--cookie`, `logout`, `status` (Task 4, 12, 13). Сеть: User-Agent, таймаут, без редиректов, cookie только для pointfree.co (Task 4, 6). Кэш в памяти, лимит 50 (Task 5, 6; TTL сведён к одному значению 1 ч — отклонение от спеки зафиксировано в Task 6 и README). Разбор HTML по семантике, `structureChanged` (Task 7–9). Таблица ошибок (Task 4, 11). Тесты на синтетических фикстурах и живые за флагом (Task 14). Лицензионные ограничения: фикстуры синтетические, `live/` в `.gitignore`, транскрипты не пишутся на диск.
+**Spec coverage.** Инструменты: `searchPointFree` с учётом обрезки до ~50 карточек (Task 8, 10, 12), `fetchEpisode` с `section` и ошибками входа (Task 7, 10, 12), `listEpisodes` (Task 2, 10, 12), `fetchCollection` с `slug`/`section` (Task 9, 10, 12), `listBlogPosts` и `fetchBlogPost` через Atom-фид (Task 6, 10, 11, 12), `login` (Task 12, 14). Авторизация через WKWebView, файл 0600, `--cookie`, `logout`, `status` (Task 4, 13, 14). Сеть: User-Agent, таймаут, без редиректов, cookie только для pointfree.co (Task 4, 6). Кэш в памяти, лимит 50, единый TTL 1 ч (Task 5, 6). Разбор HTML по семантике, терпимость к `blockquote` и вложенным заголовкам, `structureChanged` (Task 7–9, 11). Таблица ошибок (Task 4, 12). Тесты на синтетических фикстурах и живые за флагом (Task 15). Лицензионные ограничения: фикстуры синтетические, `live/` в `.gitignore`, транскрипты не пишутся на диск.
 
-**Отклонение от спеки.** `fetchCollection` получил третий режим с параметром `section`: страница коллекции содержит только секции, эпизоды лежат на странице секции. Спеку обновить одной строкой при выполнении Task 9.
+**Порядок задач.** Task 11 (блог) идёт до Task 12 (инструменты), потому что каталог ссылается на парсеры блога; остальные задачи в порядке номеров.
 
-**Type consistency.** `PointFreeClient` поля совпадают между Task 6 и 11; `EpisodePage.isTruncated`, `Transcript.hasBody`, `Transcript.chapter(matching:)` используются в Task 10–11 как определены в Task 7; `ToolArguments.string/int/bool` и `ToolOutput` совпадают между Task 11 и 12; `LoginOutcome` совпадает между `LoginLauncher` и `ToolCatalog.login`; коды выхода `Login` (0/1/2/3) согласованы с `LoginLauncher.liveValue` (1 → cancelled, прочие → failed).
+**Type consistency.** `PointFreeClient` поля (включая `blogFeed`) совпадают между Task 6 и 12; `SearchPage` из Task 8 используется в Task 10 и 12; `Transcript.Block` с `.quote`/`.heading` из Task 7 используется в Task 10 и 11; `EpisodePage.isTruncated`, `Transcript.hasBody`, `Transcript.chapter(matching:)` используются в Task 10 и 12 как определены в Task 7; `BlogPost`, `BlogPostRef`, `BlogFeedParser`, `BlogContentParser` из Task 11 используются в Task 10 и 12; `ToolArguments.string/int/bool` и `ToolOutput` совпадают между Task 12 и 13; `LoginOutcome` совпадает между `LoginLauncher` и `ToolCatalog.login`; коды выхода `Login` (0/1/2/3) согласованы с `LoginLauncher.liveValue` (1 → cancelled, прочие → failed).
 
-**Review Focus.** Пункт 1 — Task 3; 2 и 3 — Task 6; 4 — Task 7 (сущности и вложенный `span` в `<pre>`); 5 — Task 11 (`fetchEpisodeWithValidSessionButTruncatedKeepsSession`).
+**Review Focus.** Пункт 1 — Task 3; 2 и 3 — Task 6; 4 — Task 7 (сущности и вложенный `span` в `<pre>`); 5 — Task 12 (`fetchEpisodeWithValidSessionButTruncatedKeepsSession`).

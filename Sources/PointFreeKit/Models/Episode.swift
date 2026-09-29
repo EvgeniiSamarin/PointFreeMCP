@@ -50,7 +50,10 @@ public struct EpisodeDetail: Codable, Equatable, Sendable, Identifiable {
 
   public var durationLabel: String { Timecode.label(seconds: length) }
   public var accessLabel: String { subscriberOnly ? "Members only" : "Free" }
-  public var pageURL: URL { URL(string: "https://www.pointfree.co/episodes/\(id)")! }
+  public var pageURL: URL {
+    guard let url = URL(string: "https://www.pointfree.co/episodes/\(id)") else { preconditionFailure("invalid episode URL") }
+    return url
+  }
   public var codeSampleURL: URL? {
     codeSampleDirectory.flatMap {
       URL(string: "https://github.com/pointfreeco/episode-code-samples/tree/main/\($0)")

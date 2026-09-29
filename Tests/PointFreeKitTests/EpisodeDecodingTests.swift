@@ -10,7 +10,8 @@ import Testing
   #expect(first.subscriberOnly)
   #expect(first.durationLabel == "16:48")
   let calendar = Calendar(identifier: .gregorian)
-  let year = calendar.dateComponents(in: TimeZone(identifier: "UTC")!, from: first.publishedAt).year
+  let utc = try #require(TimeZone(identifier: "UTC"))
+  let year = calendar.dateComponents(in: utc, from: first.publishedAt).year
   #expect(year == 2026)
 }
 

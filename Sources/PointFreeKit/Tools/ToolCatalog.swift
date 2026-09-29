@@ -1,5 +1,4 @@
 import Dependencies
-import Foundation
 
 public struct ToolOutput: Equatable, Sendable {
   public var text: String

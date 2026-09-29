@@ -7,11 +7,17 @@ import WebKit
 final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStoreObserver, WKNavigationDelegate {
   enum Result: Equatable { case cookie(String, expires: Date?), cancelled, timedOut }
 
-  private static let dataStoreID = UUID(uuidString: "6B1C8E8A-3C0B-4D4E-9C2C-0F8B8C1D2E3F")!
-  private let loginURL = URL(string: "https://www.pointfree.co/login")!
+  private static let dataStoreID: UUID = {
+    guard let id = UUID(uuidString: "6B1C8E8A-3C0B-4D4E-9C2C-0F8B8C1D2E3F") else { preconditionFailure("invalid data store ID") }
+    return id
+  }()
+  private let loginURL: URL = {
+    guard let url = URL(string: "https://www.pointfree.co/login") else { preconditionFailure("invalid login URL") }
+    return url
+  }()
   private let validate: @Sendable (String) async throws -> Bool
-  private var window: NSWindow!
-  private var webView: WKWebView!
+  private var window: NSWindow?
+  private var webView: WKWebView?
   private var timeoutTimer: Timer?
   private var pollTimer: Timer?
   private var cookieStore: WKHTTPCookieStore?  // WebKit не удерживает наблюдателей; прокси хранилища должен жить
@@ -35,13 +41,14 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     let config = WKWebViewConfiguration()
     config.websiteDataStore = WKWebsiteDataStore(forIdentifier: Self.dataStoreID)
     config.defaultWebpagePreferences.allowsContentJavaScript = true
-    webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 720), configuration: config)
+    let webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 720), configuration: config)
+    self.webView = webView
     webView.navigationDelegate = self
     let store = webView.configuration.websiteDataStore.httpCookieStore
     cookieStore = store
     store.add(self)
 
-    window = NSWindow(
+    let window = NSWindow(
       contentRect: webView.frame,
       styleMask: [.titled, .closable, .resizable, .miniaturizable],
       backing: .buffered, defer: false
@@ -50,6 +57,7 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     window.isReleasedWhenClosed = false
     window.contentView = webView
     window.delegate = self
+    self.window = window
     window.center()
     window.makeKeyAndOrderFront(nil)
     window.orderFrontRegardless()
@@ -76,7 +84,8 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
 
   private func checkCookies() {
     guard result == nil, !validating else { return }
-    (cookieStore ?? webView.configuration.websiteDataStore.httpCookieStore).getAllCookies { [weak self] cookies in
+    guard let store = cookieStore ?? webView?.configuration.websiteDataStore.httpCookieStore else { return }
+    store.getAllCookies { [weak self] cookies in
       guard let self, self.result == nil, !self.validating else { return }
       let shared = HTTPCookieStorage.shared.cookies?.count ?? 0
       let list = cookies.map { "\($0.name)@\($0.domain)" }.joined(separator: ", ")
@@ -155,12 +164,13 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     timeoutTimer?.invalidate()
     pollTimer?.invalidate()
     cookieStore?.remove(self)
-    window.delegate = nil
-    window.orderOut(nil)
+    window?.delegate = nil
+    window?.orderOut(nil)
     NSApp.stop(nil)
     // NSApp.stop срабатывает только после следующего события — шлём пустое.
-    let wake = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0,
-                                  windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0)!
-    NSApp.postEvent(wake, atStart: true)
+    if let wake = NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0,
+                                     windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0) {
+      NSApp.postEvent(wake, atStart: true)
+    }
   }
 }

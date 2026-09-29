@@ -3,6 +3,7 @@ import Foundation
 import Testing
 @testable import PointFreeKit
 
+// SAFETY: тест обращается к объекту последовательно из одного таска; синхронизация не нужна.
 private final class RequestLog: @unchecked Sendable { var requests: [URLRequest] = [] }
 
 private func client(
@@ -42,7 +43,8 @@ private func client(
 @Test func missingEpisodeIsNotFoundNotDecodingError() async throws {
   let log = RequestLog()
   let c = client(log: log) { _ in HTTPResponse(statusCode: 404, body: Data("<html>Page not found</html>".utf8)) }
-  await #expect(throws: PointFreeError.notFound(URL(string: "https://www.pointfree.co/api/episodes/9999")!)) {
+  let missing = try #require(URL(string: "https://www.pointfree.co/api/episodes/9999"))
+  await #expect(throws: PointFreeError.notFound(missing)) {
     _ = try await c.episode(9999)
   }
 }
@@ -88,7 +90,8 @@ private func client(
 @Test func serverErrorsSurfaceAsHttpStatus() async throws {
   let log = RequestLog()
   let c = client(log: log) { _ in HTTPResponse(statusCode: 503, body: Data()) }
-  await #expect(throws: PointFreeError.httpStatus(503, URL(string: "https://www.pointfree.co/collections")!)) {
+  let collections = try #require(URL(string: "https://www.pointfree.co/collections"))
+  await #expect(throws: PointFreeError.httpStatus(503, collections)) {
     _ = try await c.collectionsPage()
   }
 }

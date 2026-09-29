@@ -15,7 +15,9 @@ public struct SearchQuery: Equatable, Sendable {
   }
 
   public var url: URL {
-    var components = URLComponents(url: PointFreeClient.baseURL.appendingPathComponent("search"), resolvingAgainstBaseURL: false)!
+    guard var components = URLComponents(url: PointFreeClient.baseURL.appendingPathComponent("search"), resolvingAgainstBaseURL: false) else {
+      preconditionFailure("invalid search URL")
+    }
     var items = [URLQueryItem(name: "q", value: query)]
     if let scope { items.append(URLQueryItem(name: "scope", value: scope.rawValue)) }
     if let access { items.append(URLQueryItem(name: "access", value: access.rawValue)) }
@@ -28,7 +30,8 @@ public struct SearchQuery: Equatable, Sendable {
       let value = item.value?.addingPercentEncoding(withAllowedCharacters: allowed) ?? ""
       return "\(item.name)=\(value)"
     }.joined(separator: "&")
-    return components.url!
+    guard let url = components.url else { preconditionFailure("invalid search URL for query") }
+    return url
   }
 
   public var cacheKey: String { url.absoluteString }

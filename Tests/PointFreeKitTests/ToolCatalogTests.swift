@@ -11,6 +11,9 @@ private func detailJSON() throws -> EpisodeDetail {
   try PointFreeJSON.decoder.decode(EpisodeDetail.self, from: fixture("episode-381.json"))
 }
 
+// SAFETY: тест обращается к объекту последовательно из одного таска; синхронизация не нужна.
+private final class Flag: @unchecked Sendable { var value = false }
+
 @Test func toolDefinitionsAreValidJSONSchemas() throws {
   #expect(ToolDefinitions.all.map(\.name) == ["searchPointFree", "fetchEpisode", "listEpisodes", "fetchCollection", "listBlogPosts", "fetchBlogPost", "login"])
   for def in ToolDefinitions.all {
@@ -81,39 +84,37 @@ private func detailJSON() throws -> EpisodeDetail {
 }
 
 @Test func fetchEpisodeWithDeadSessionClearsItAndAsksToLogin() async throws {
-  final class Flag: @unchecked Sendable { var cleared = false }
   let flag = Flag()
   let out = try await withDependencies {
     $0.pointFreeClient.episode = { _ in try detailJSON() }
     $0.pointFreeClient.episodePage = { _ in try fixtureString("episode-locked.html") }
     $0.pointFreeClient.validateSession = { _ in false }
     $0.sessionStore.load = { Session(cookie: "OLD", expiresAt: .distantFuture, savedAt: .distantPast) }
-    $0.sessionStore.clear = { flag.cleared = true }
+    $0.sessionStore.clear = { flag.value = true }
     $0.date.now = Date()
   } operation: {
     await ToolCatalog().call(name: "fetchEpisode", arguments: try args(#"{"episode":"381"}"#))
   }
   #expect(out.isError)
   #expect(out.text == PointFreeError.sessionExpired.userMessage)
-  #expect(flag.cleared)
+  #expect(flag.value)
 }
 
 @Test func fetchEpisodeWithValidSessionButTruncatedKeepsSession() async throws {
-  final class Flag: @unchecked Sendable { var cleared = false }
   let flag = Flag()
   let out = try await withDependencies {
     $0.pointFreeClient.episode = { _ in try detailJSON() }
     $0.pointFreeClient.episodePage = { _ in try fixtureString("episode-locked.html") }
     $0.pointFreeClient.validateSession = { _ in true }
     $0.sessionStore.load = { Session(cookie: "OK", expiresAt: .distantFuture, savedAt: .distantPast) }
-    $0.sessionStore.clear = { flag.cleared = true }
+    $0.sessionStore.clear = { flag.value = true }
     $0.date.now = Date()
   } operation: {
     await ToolCatalog().call(name: "fetchEpisode", arguments: try args(#"{"episode":"381"}"#))
   }
   #expect(out.isError)
   #expect(out.text == PointFreeError.subscriptionRequired.userMessage)
-  #expect(!flag.cleared)
+  #expect(!flag.value)
 }
 
 @Test func fetchEpisodeRejectsBadReference() async throws {
@@ -190,16 +191,15 @@ private func detailJSON() throws -> EpisodeDetail {
 }
 
 @Test func loginToolLaunchesWindowAndInvalidatesCache() async throws {
-  final class Flag: @unchecked Sendable { var invalidated = false }
   let flag = Flag()
   let out = try await withDependencies {
-    $0.sessionStore.load = { flag.invalidated ? Session(cookie: "NEW", expiresAt: .distantFuture, savedAt: .distantPast) : nil }
+    $0.sessionStore.load = { flag.value ? Session(cookie: "NEW", expiresAt: .distantFuture, savedAt: .distantPast) : nil }
     $0.loginLauncher.run = { .success }
-    $0.pointFreeClient.invalidateCache = { flag.invalidated = true }
+    $0.pointFreeClient.invalidateCache = { flag.value = true }
   } operation: { await ToolCatalog().call(name: "login", arguments: try args("{}")) }
   #expect(!out.isError)
   #expect(out.text.contains("Signed in"))
-  #expect(flag.invalidated)
+  #expect(flag.value)
 }
 
 @Test func loginToolReportsCancellation() async throws {

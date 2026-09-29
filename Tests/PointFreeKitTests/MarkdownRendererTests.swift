@@ -102,9 +102,10 @@ private func transcript() -> Transcript {
   #expect(!md.contains("narrow with"))
 }
 
-@Test func rendersBlogPostAndList() {
+@Test func rendersBlogPostAndList() throws {
+  let postURL = try #require(URL(string: "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone"))
   let post = BlogPost(number: 228, slug: "228-lazystate-1-0-now-available-to-everyone", title: "LazyState 1.0",
-                      url: URL(string: "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")!,
+                      url: postURL,
                       updated: Date(timeIntervalSince1970: 1_789_300_000), contentHTML: "")
   let md = MarkdownRenderer.blogPost(post, blocks: [.paragraph("Hi"), .code("let x = 1\n"), .heading("Why")])
   #expect(md.hasPrefix("# LazyState 1.0\n\n- Published: 2026-09-13\n- URL: https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone\n\nHi\n\n```swift\nlet x = 1\n```\n\n### Why\n"))

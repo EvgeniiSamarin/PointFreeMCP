@@ -18,7 +18,10 @@ public struct PointFreeClient: Sendable {
 }
 
 extension PointFreeClient {
-  public static let baseURL = URL(string: "https://www.pointfree.co")!
+  public static let baseURL: URL = {
+    guard let url = URL(string: "https://www.pointfree.co") else { preconditionFailure("invalid base URL") }
+    return url
+  }()
   public static let cookieName = "pf_session"
 
   public static func live(cache: MemoryCache<String>) -> PointFreeClient {
@@ -40,9 +43,12 @@ extension PointFreeClient {
     @Sendable func get(_ path: String, query: [URLQueryItem] = [], url overrideURL: URL? = nil, cookie: String?) async throws -> HTTPResponse {
       let url: URL
       if let overrideURL { url = overrideURL } else {
-        var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false)!
+        guard var components = URLComponents(url: baseURL.appendingPathComponent(path), resolvingAgainstBaseURL: false) else {
+          throw PointFreeError.network("invalid URL for \(path)")
+        }
         if !query.isEmpty { components.queryItems = query }
-        url = components.url!
+        guard let built = components.url else { throw PointFreeError.network("invalid URL for \(path)") }
+        url = built
       }
       var request = URLRequest(url: url)
       request.httpMethod = "GET"

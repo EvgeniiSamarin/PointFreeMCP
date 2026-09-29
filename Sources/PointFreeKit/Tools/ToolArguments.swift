@@ -1,4 +1,3 @@
-import Foundation
 
 public struct ToolArguments: Decodable, Sendable {
   public enum Value: Decodable, Equatable, Sendable {

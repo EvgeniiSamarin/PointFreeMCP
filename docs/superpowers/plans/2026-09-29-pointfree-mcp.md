@@ -12,7 +12,7 @@
 
 ## Execution Order
 
-Задачи выполняются в порядке 1–9, **11, 10**, 12–15: Task 10 (рендер) использует `BlogPost` из Task 11, а Task 11 зависит только от Tasks 4 и 7.
+Задачи выполняются в порядке 1–9, **11, 10**, 12, 13, **16**, 14, 15: Task 10 (рендер) использует `BlogPost` из Task 11, а Task 11 зависит только от Tasks 4 и 7.
 
 ## Global Constraints
 
@@ -3459,6 +3459,191 @@ claude mcp add pointfree -- "$PWD/.build/release/pointfree-mcp" serve
 ```bash
 git add README.md Tests/PointFreeKitTests/LiveTests.swift
 git commit -m "docs: README, live tests behind POINTFREE_LIVE"
+```
+
+---
+
+### Task 16: Полный текст поста блога со страницы
+
+**Files:**
+- Modify: `Sources/PointFreeKit/Client/PointFreeClient.swift` (добавить `blogPostPage`)
+- Modify: `Sources/PointFreeKit/Parsing/BlogContentParser.swift` (выделить `blocks(in:)`, добавить `blocks(page:url:)`)
+- Modify: `Sources/PointFreeKit/Tools/ToolCatalog.swift` (`fetchBlogPost` читает страницу)
+- Modify: `Sources/PointFreeKit/Tools/ToolDefinitions.swift` (описание `fetchBlogPost`)
+- Create: `Tests/PointFreeKitTests/Fixtures/blog-post.html`
+- Modify: `Tests/PointFreeKitTests/BlogTests.swift`, `Tests/PointFreeKitTests/PointFreeClientTests.swift`, `Tests/PointFreeKitTests/ToolCatalogTests.swift`
+
+**Interfaces:**
+- Consumes: `PointFreeClient` (Task 6), `BlogContentParser.blocks(html:)` и `BlogFeedParser` (Task 11), `ToolCatalog.fetchBlogPost` (Task 12), `PointFreeError.structureChanged`.
+- Produces: `PointFreeClient.blogPostPage: @Sendable (_ pathComponent: String) async throws -> String`; `BlogContentParser.blocks(in element: Element) throws -> [Transcript.Block]`; `BlogContentParser.blocks(page html: String, url: URL?) throws -> [Transcript.Block]`.
+
+Причина: Atom-фид содержит только анонс (один абзац) каждого поста, а не полный текст (проверено на живом фиде: ни одной записи с `<pre>`, максимум 788 байт на запись). Полный текст лежит на странице `/blog/posts/{slug}` (и `/blog/posts/{number}`, отдаётся 200 без редиректа) внутри `article > pf-markdown > pf-vstack` с теми же блоками, что и транскрипт (`p`, `pre > code`, `h2`–`h4`, `ul/ol > li`, `blockquote`). Фид остаётся источником списка (номер, название, дата, ссылка).
+
+- [ ] **Step 1: Фикстура `blog-post.html`**
+
+```html
+<!doctype html><html><head><title>LazyState 1.0: Now available to everyone</title></head><body>
+<h3>LazyState 1.0: Now available to everyone</h3>
+<p>Monday September 14, 2026</p>
+<article><pf-markdown><pf-vstack>
+  <p>We are excited to announce <a href="https://github.com/pointfreeco/swiftui-lazy-state">LazyState</a> <strong>1.0</strong>.</p>
+  <h2>Usage</h2>
+  <pre><code>@LazyState var model = Model()
+</code></pre>
+  <ul><li>One</li><li>Two with <code>code</code></li></ul>
+  <blockquote><p>Quoted.</p></blockquote>
+</pf-vstack></pf-markdown></article>
+<footer><p>Footer must not appear.</p></footer>
+</body></html>
+```
+
+- [ ] **Step 2: Тесты**
+
+В `BlogTests.swift` добавить:
+```swift
+@Test func parsesBlogPostPageArticle() throws {
+  let blocks = try BlogContentParser.blocks(page: fixtureString("blog-post.html"), url: nil)
+  #expect(blocks == [
+    .paragraph("We are excited to announce [LazyState](https://github.com/pointfreeco/swiftui-lazy-state) **1.0**."),
+    .heading("Usage"),
+    .code("@LazyState var model = Model()\n"),
+    .listItem("One"),
+    .listItem("Two with `code`"),
+    .quote("Quoted."),
+  ])
+}
+
+@Test func blogPageWithoutArticleIsStructureChange() {
+  #expect(throws: PointFreeError.structureChanged("article", nil)) {
+    _ = try BlogContentParser.blocks(page: "<html><body><p>nope</p></body></html>", url: nil)
+  }
+}
+```
+
+В `PointFreeClientTests.swift` добавить:
+```swift
+@Test func blogPostPageIsFetchedWithoutCookieAndCached() async throws {
+  let log = RequestLog()
+  let session = Session(cookie: "COOKIE", expiresAt: Date(timeIntervalSince1970: 5_000), savedAt: Date(timeIntervalSince1970: 0))
+  let c = client(session: session, log: log) { _ in HTTPResponse(statusCode: 200, body: Data("<html><article></article></html>".utf8)) }
+  _ = try await c.blogPostPage("228-lazystate-1-0-now-available-to-everyone")
+  _ = try await c.blogPostPage("228-lazystate-1-0-now-available-to-everyone")
+  #expect(log.requests.count == 1)
+  #expect(log.requests[0].url?.absoluteString == "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")
+  #expect(log.requests[0].value(forHTTPHeaderField: "Cookie") == nil)
+}
+```
+
+В `ToolCatalogTests.swift` заменить тест `blogToolsListAndFetchFromFeed` на:
+```swift
+@Test func blogToolsListFromFeedAndFetchFromPage() async throws {
+  let catalog = ToolCatalog()
+  let list = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+  } operation: { await catalog.call(name: "listBlogPosts", arguments: try args(#"{"filter":"lazystate","limit":5}"#)) }
+  #expect(!list.isError)
+  #expect(list.text.contains("#228 LazyState 1.0"))
+  #expect(!list.text.contains("#1 Announcing"))
+
+  let post = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+    $0.pointFreeClient.blogPostPage = { path in
+      #expect(path == "228-lazystate-1-0-now-available-to-everyone")
+      return try fixtureString("blog-post.html")
+    }
+  } operation: { await catalog.call(name: "fetchBlogPost", arguments: try args(#"{"post":"228"}"#)) }
+  #expect(!post.isError)
+  #expect(post.text.hasPrefix("# LazyState 1.0: Now available to everyone"))
+  #expect(post.text.contains("```swift\n@LazyState var model = Model()\n```"))
+  #expect(post.text.contains("- Published: 2026-09-14"))
+
+  let missing = try await withDependencies {
+    $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+  } operation: { await catalog.call(name: "fetchBlogPost", arguments: try args(#"{"post":"999"}"#)) }
+  #expect(missing.isError)
+  #expect(missing.text.contains("999"))
+}
+```
+
+- [ ] **Step 3: Запустить — не компилируется / падает**
+
+Run: `swift test --filter "BlogTests|PointFreeClientTests|ToolCatalogTests"`
+Expected: ошибки компиляции (`blogPostPage`, `blocks(page:url:)` не определены).
+
+- [ ] **Step 4: Реализация**
+
+`PointFreeClient.swift`: поле `public var blogPostPage: @Sendable (_ pathComponent: String) async throws -> String` (после `blogFeed`); в `live(cache:)`:
+```swift
+      blogPostPage: { pathComponent in
+        try await cachedHTML(key: "blog/posts/\(pathComponent)") { try await get("blog/posts/\(pathComponent)", cookie: nil) }
+      },
+```
+
+`BlogContentParser.swift`:
+```swift
+public enum BlogContentParser {
+  /// HTML-фрагмент (например, из Atom-фида).
+  public static func blocks(html: String) throws -> [Transcript.Block] {
+    let doc = try SwiftSoup.parseBodyFragment(html)
+    guard let body = doc.body() else { return [] }
+    return try blocks(in: body)
+  }
+
+  /// Полная страница поста: тело — `article`.
+  public static func blocks(page html: String, url: URL?) throws -> [Transcript.Block] {
+    let doc = try SwiftSoup.parse(html)
+    guard let article = try doc.select("article").first() else {
+      throw PointFreeError.structureChanged("article", url)
+    }
+    return try blocks(in: article)
+  }
+
+  public static func blocks(in root: Element) throws -> [Transcript.Block] {
+    // существующий цикл по root.select("h1, h2, h3, h4, h5, h6, p, pre, li, blockquote") без изменений
+  }
+}
+```
+
+`ToolCatalog.fetchBlogPost`:
+```swift
+  func fetchBlogPost(_ args: ToolArguments) async throws -> ToolOutput {
+    guard let raw = args.string("post") else { throw PointFreeError.invalidArgument("`post` is required") }
+    guard let ref = BlogPostRef.parse(raw) else {
+      throw PointFreeError.invalidArgument("`post` must be a number (228), a slug (228-…) or a pointfree.co blog URL; got \"\(raw)\"")
+    }
+    let posts = try BlogFeedParser.parse(xml: try await client.blogFeed())
+    guard let post = posts.first(where: { $0.number == ref.number }) else {
+      throw PointFreeError.invalidArgument("Blog post \(ref.number) not found in the feed")
+    }
+    let html = try await client.blogPostPage(post.slug)
+    let blocks = try BlogContentParser.blocks(page: html, url: post.url)
+    return ToolOutput(text: MarkdownRenderer.blogPost(post, blocks: blocks))
+  }
+```
+
+`ToolDefinitions.swift`: описание `fetchBlogPost` заменить на: "Fetch a Point-Free Pointers blog post as markdown with code blocks (full text from the post page). Accepts a post number (228), slug (228-lazystate-1-0-now-available-to-everyone) or URL. No login needed."
+
+- [ ] **Step 5: Тесты проходят**
+
+Run: `swift test --filter "BlogTests|PointFreeClientTests|ToolCatalogTests"`, затем полный `swift test`.
+Expected: PASS, без предупреждений.
+
+- [ ] **Step 6: Живая проверка**
+
+```bash
+swift build && (printf '%s\n%s\n%s\n' \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
+  '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchBlogPost","arguments":{"post":"228"}}}'; sleep 15) \
+  | .build/debug/pointfree-mcp serve
+```
+Expected: markdown поста с несколькими блоками ```swift (на живой странице 6 `<pre>`).
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add Sources/PointFreeKit Tests/PointFreeKitTests
+git commit -m "feat: fetch full blog post text from the post page" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---

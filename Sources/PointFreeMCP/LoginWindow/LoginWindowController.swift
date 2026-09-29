@@ -79,13 +79,42 @@ final class LoginWindowController: NSObject, NSApplicationDelegate, NSWindowDele
       MainActor.assumeIsolated { self?.checkCookies() }
     }
     timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
-      // Не Task { @MainActor }: пока крутится NSApp.run() внутри main-actor задачи, executor главного актора не обслуживается.
+      // Не Task { @MainActor }: NSApp.run() крутится на главном потоке прямо из синхронного EntryPoint.main(),
+      // до dispatchMain(), поэтому главная очередь (executor главного актора) до выхода из run() не обслуживается.
       MainActor.assumeIsolated { self?.finish(.timedOut) }
     }
     checkCookies()  // профиль мог сохранить живую сессию с прошлого раза
+    installMainMenu(app)
     app.run()
     app.delegate = nil
     return result ?? .cancelled
+  }
+
+  /// Без главного меню не работают ⌘Q и стандартные сочетания правки (⌘C/⌘V в полях пароля и 2FA).
+  /// Quit идёт через `terminate(_:)` → `applicationShouldTerminate` → отмена (код 1).
+  private func installMainMenu(_ app: NSApplication) {
+    let mainMenu = NSMenu()
+
+    let appItem = NSMenuItem()
+    let appMenu = NSMenu()
+    appMenu.addItem(withTitle: "Quit pointfree-mcp", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q")
+    appItem.submenu = appMenu
+    mainMenu.addItem(appItem)
+
+    let editItem = NSMenuItem()
+    let editMenu = NSMenu(title: "Edit")
+    // Действия идут по цепочке ответчиков (target nil) до WKWebView; undo:/redo: — без публичного объявления в Swift.
+    editMenu.addItem(withTitle: "Undo", action: NSSelectorFromString("undo:"), keyEquivalent: "z")
+    editMenu.addItem(withTitle: "Redo", action: NSSelectorFromString("redo:"), keyEquivalent: "Z")
+    editMenu.addItem(.separator())
+    editMenu.addItem(withTitle: "Cut", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+    editMenu.addItem(withTitle: "Copy", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+    editMenu.addItem(withTitle: "Paste", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+    editMenu.addItem(withTitle: "Select All", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+    editItem.submenu = editMenu
+    mainMenu.addItem(editItem)
+
+    app.mainMenu = mainMenu
   }
 
   nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {

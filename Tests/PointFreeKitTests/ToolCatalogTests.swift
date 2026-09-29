@@ -74,7 +74,8 @@ private final class Flag: @unchecked Sendable { var value = false }
 @Test func fetchEpisodeWithoutSessionAsksToLogin() async throws {
   let out = try await withDependencies {
     $0.pointFreeClient.episode = { _ in try detailJSON() }
-    $0.pointFreeClient.episodePage = { _ in try fixtureString("episode-locked.html") }
+    // Slug из ввода не идёт в путь: страница запрашивается по номеру.
+    $0.pointFreeClient.episodePage = { path in #expect(path == "381"); return try fixtureString("episode-locked.html") }
     $0.sessionStore.load = { nil }
   } operation: {
     await ToolCatalog().call(name: "fetchEpisode", arguments: try args(#"{"episode":"ep381-designing-for-isolation-naively"}"#))

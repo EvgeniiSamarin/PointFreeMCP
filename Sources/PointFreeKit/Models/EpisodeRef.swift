@@ -19,7 +19,9 @@ public struct EpisodeRef: Equatable, Sendable {
   public var slug: String?
   public var section: SectionRef?
 
-  public var pathComponent: String { slug ?? String(number) }
+  /// Путь страницы эпизода. Сайт отдаёт страницу только по номеру (`/episodes/381` → 200);
+  /// `/episodes/ep381` без полного slug — 404, поэтому slug из ввода пользователя в путь не идёт.
+  public var pathComponent: String { String(number) }
 
   public static func parse(_ raw: String) -> EpisodeRef? {
     var text = raw.trimmingCharacters(in: .whitespacesAndNewlines)

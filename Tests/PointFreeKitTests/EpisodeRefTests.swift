@@ -24,8 +24,9 @@ func rejectsBadRefs(raw: String) {
 }
 
 @Test func pathComponentPrefersSlug() {
+  // Страница эпизода запрашивается по номеру: /episodes/ep381 на сайте — 404.
   #expect(EpisodeRef.parse("381")?.pathComponent == "381")
-  #expect(EpisodeRef.parse("ep381-a-b")?.pathComponent == "ep381-a-b")
+  #expect(EpisodeRef.parse("ep381-a-b")?.pathComponent == "381")
 }
 
 @Test func parsesSectionRefs() {

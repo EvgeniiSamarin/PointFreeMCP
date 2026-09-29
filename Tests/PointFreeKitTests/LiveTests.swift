@@ -49,3 +49,12 @@ private func liveClient() -> PointFreeClient {
   let signedIn = (try? SessionStore.liveValue.load()) != nil
   #expect(page.isTruncated == !signedIn)
 }
+
+@Test(.enabled(if: live)) func liveFetchEpisodeThroughCatalog() async throws {
+  let arguments = try JSONDecoder().decode(ToolArguments.self, from: Data(#"{"episode":"ep1"}"#.utf8))
+  let out = await withDependencies { $0.context = .live } operation: {
+    await ToolCatalog().call(name: "fetchEpisode", arguments: arguments)
+  }
+  #expect(!out.isError, "\(out.text.prefix(300))")
+  #expect(out.text.contains("# Episode #1"))
+}

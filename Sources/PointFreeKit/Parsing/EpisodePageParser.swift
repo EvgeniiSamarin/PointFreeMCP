@@ -14,8 +14,10 @@ public enum EpisodePageParser {
       throw PointFreeError.structureChanged("article", url)
     }
 
-    // TOC: ссылки на главы вне article (href="#slug" без data-timestamp)
-    let tocLinks = try doc.select("li > a[href^=#]:not([data-timestamp])")
+    // TOC: таймкоды глав вне article. На живой странице ссылки оглавления лежат
+    // внутри pf-hstack внутри li, а боковые ссылки #references/#downloads без таймкода,
+    // поэтому считаем именно a[data-timestamp] вне article (по уникальному href).
+    let tocLinks = try doc.select("a[data-timestamp]")
       .filter { link in !(link.parents().contains { $0.tagName() == "article" }) }
     let tocChapterCount = Set(try tocLinks.map { try $0.attr("href") }).count
 

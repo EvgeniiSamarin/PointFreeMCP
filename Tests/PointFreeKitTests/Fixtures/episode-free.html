@@ -1,0 +1,26 @@
+<!doctype html><html><head><title>Episode #1: Functions</title></head><body>
+<nav><ul>
+  <li><a href="#introduction">Introduction</a><a data-timestamp="5" href="#t5">0:05</a></li>
+  <li><a href="#composition">Composition</a><a data-timestamp="141" href="#t141">2:21</a></li>
+</ul></nav>
+<article><pf-markdown><pf-vstack>
+  <a id="introduction"></a><div><h4>Introduction<a href="#introduction"><svg></svg></a></h4></div>
+  <div><strong>Brandon</strong><div><div id="t5"><a data-timestamp="5" href="#t5">0:05</a></div></div></div>
+  <p>Placeholder intro with <code>incr</code> and a <a href="/episodes/ep2-side-effects">link</a>, plus <em>emphasis</em> and <strong>bold</strong>.</p>
+  <pre><code>func incr(_ x: Int) -&gt; Int {
+  return x + 1  // a &amp; b &lt; c
+}
+</code></pre>
+  <div><div id="t68"><a data-timestamp="68" href="#t68">1:08</a></div></div>
+  <p>Second paragraph.</p>
+  <ol><li>First item with <code>code</code></li><li>Second item</li></ol>
+  <a id="composition"></a><div><h4>Composition<a href="#composition"><svg></svg></a></h4></div>
+  <div><strong>Stephen</strong><div><div id="t141"><a data-timestamp="141" href="#t141">2:21</a></div></div></div>
+  <p>Composition paragraph.</p>
+  <pre><code><span class="k">let</span> f = incr &gt;&gt;&gt; square</code></pre>
+  <blockquote><p>Quoted <code>note</code>.</p></blockquote>
+  <h3>Inner heading</h3>
+  <p>After heading.</p>
+</pf-vstack></pf-markdown></article>
+<footer><h4>Join Point-Free</h4><p>Footer text must not appear.</p></footer>
+</body></html>

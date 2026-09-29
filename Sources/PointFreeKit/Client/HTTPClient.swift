@@ -34,6 +34,10 @@ extension HTTPClient: DependencyKey {
         return HTTPResponse(statusCode: http.statusCode, body: data, headers: headers)
       } catch let error as PointFreeError {
         throw error
+      } catch is CancellationError {
+        throw CancellationError()
+      } catch let error as URLError where error.code == .cancelled {
+        throw error  // отмена задачи, а не сетевая ошибка
       } catch {
         throw PointFreeError.network(error.localizedDescription)
       }

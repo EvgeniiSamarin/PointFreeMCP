@@ -216,3 +216,61 @@ private final class Flag: @unchecked Sendable { var value = false }
   let out = await ToolCatalog().call(name: "nope", arguments: try args("{}"))
   #expect(out.isError)
 }
+
+@Test func fetchEpisodeValidationErrorPropagatesAndKeepsSession() async throws {
+  let flag = Flag()
+  let account = try #require(URL(string: "https://www.pointfree.co/account"))
+  let out = try await withDependencies {
+    $0.pointFreeClient.episode = { _ in try detailJSON() }
+    $0.pointFreeClient.episodePage = { _ in try fixtureString("episode-locked.html") }
+    $0.pointFreeClient.validateSession = { _ in throw PointFreeError.httpStatus(503, account) }
+    $0.sessionStore.load = { Session(cookie: "OK", expiresAt: .distantFuture, savedAt: .distantPast) }
+    $0.sessionStore.clear = { flag.value = true }
+    $0.date.now = Date()
+  } operation: {
+    await ToolCatalog().call(name: "fetchEpisode", arguments: try args(#"{"episode":"381"}"#))
+  }
+  #expect(out.isError)
+  #expect(out.text == PointFreeError.httpStatus(503, account).userMessage)
+  #expect(!flag.value)
+}
+
+@Test func fetchCollectionSectionRequiresSlug() async throws {
+  let out = await ToolCatalog().call(name: "fetchCollection", arguments: try args(#"{"section":"testing"}"#))
+  #expect(out.isError)
+  #expect(out.text == PointFreeError.invalidArgument("`section` requires `slug`").userMessage)
+}
+
+@Test(arguments: ["listEpisodes", "listBlogPosts"])
+func listToolsRejectNonIntegerLimit(tool: String) async throws {
+  let out = await ToolCatalog().call(name: tool, arguments: try args(#"{"limit":"abc"}"#))
+  #expect(out.isError)
+  #expect(out.text.contains("`limit` must be an integer"))
+}
+
+@Test func listEpisodesAcceptsNullAndStringLimits() async throws {
+  let out = try await withDependencies {
+    $0.pointFreeClient.episodes = { try PointFreeJSON.decoder.decode([EpisodeSummary].self, from: fixture("episodes.json")) }
+  } operation: {
+    (await ToolCatalog().call(name: "listEpisodes", arguments: try args(#"{"limit":null}"#)),
+     await ToolCatalog().call(name: "listEpisodes", arguments: try args(#"{"limit":"1"}"#)))
+  }
+  #expect(!out.0.isError && out.0.text.contains("(3)"))
+  #expect(!out.1.isError && out.1.text.contains("(1)"))
+}
+
+@Test func cancelledCallReportsCancelled() async throws {
+  let task = Task {
+    await withDependencies {
+      $0.pointFreeClient.episodes = {
+        try await Task.sleep(for: .seconds(30))
+        return []
+      }
+    } operation: {
+      await ToolCatalog().call(name: "listEpisodes", arguments: ToolArguments())
+    }
+  }
+  task.cancel()
+  let out = await task.value
+  #expect(out == ToolOutput(text: "Cancelled", isError: true))
+}

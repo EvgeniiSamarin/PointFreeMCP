@@ -9,7 +9,9 @@ public enum SearchPageParser {
     var results: [SearchResult] = []
     for titleLink in try doc.select("h4 > a[href^=/episodes/]") {
       let href = try titleLink.attr("href")
-      let slug = String(href.dropFirst("/episodes/".count)).split(separator: "#")[0].description
+      let slug = href.dropFirst("/episodes/".count)
+        .split(separator: "#", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init) ?? ""
+      guard !slug.isEmpty else { continue }
       let title = try titleLink.text()
       let card = try cardContainer(for: titleLink) ?? titleLink
       let snippet = try card.select("p:has(mark)").first().map { try $0.text() }

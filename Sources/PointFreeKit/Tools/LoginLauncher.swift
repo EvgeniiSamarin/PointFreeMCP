@@ -23,6 +23,7 @@ extension LoginLauncher: DependencyKey {
     let process = Process()
     process.executableURL = executable
     process.arguments = ["login", "--timeout", "290"]
+    process.standardInput = FileHandle.nullDevice  // stdin сервера — канал MCP, дочернему процессу он не нужен
     process.standardOutput = FileHandle.standardError
     process.standardError = FileHandle.standardError
     let watchdog = Task {
@@ -31,9 +32,15 @@ extension LoginLauncher: DependencyKey {
     }
     defer { watchdog.cancel() }
     // terminationHandler ставится до run(), иначе быстрый выход потеряет continuation.
-    let status: Int32 = try await withCheckedThrowingContinuation { continuation in
-      process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
-      do { try process.run() } catch { continuation.resume(throwing: error) }
+    // Отмена вызова инструмента закрывает окно входа (SIGTERM дочернему процессу).
+    let status: Int32 = try await withTaskCancellationHandler {
+      try await withCheckedThrowingContinuation { continuation in
+        guard !Task.isCancelled else { continuation.resume(throwing: CancellationError()); return }
+        process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+        do { try process.run() } catch { continuation.resume(throwing: error) }
+      }
+    } onCancel: {
+      if process.isRunning { process.terminate() }
     }
     switch status {
     case 0: return .success

@@ -30,3 +30,9 @@ import Testing
     _ = try SearchPageParser.parse(html: "<html><body><p>12 videos match x</p><div>new markup</div></body></html>", url: nil)
   }
 }
+
+@Test func cardWithEmptyEpisodeSlugIsSkipped() throws {
+  let html = ##"<html><body><p>2 videos match</p><div><h4><a href="/episodes/#t5">Broken</a></h4></div><div><h4><a href="/episodes/ep1-functions">Functions</a></h4></div></body></html>"##
+  let page = try SearchPageParser.parse(html: html, url: nil)
+  #expect(page.results.map(\.slug) == ["ep1-functions"])
+}

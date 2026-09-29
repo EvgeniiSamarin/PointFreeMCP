@@ -6,7 +6,8 @@ public enum CollectionsParser {
     let doc = try SwiftSoup.parse(html)
     var result: [CollectionSummary] = []
     for link in try doc.select("a[href^=/collections/]:has(h4)") {
-      let slug = String(try link.attr("href").dropFirst("/collections/".count)).split(separator: "/")[0].description
+      let path = try link.attr("href").dropFirst("/collections/".count)
+      guard let slug = path.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: false).first.map(String.init), !slug.isEmpty else { continue }
       let title = try link.select("h4").first()?.text() ?? ""
       let description = try link.nextElementSibling()?.select("p").first()?.text()
       result.append(.init(slug: slug, title: title, description: description?.isEmpty == false ? description : nil))
@@ -27,10 +28,16 @@ public enum CollectionsParser {
       let sectionTitle = try link.select("div > div").first()?.text() ?? (try link.text())
       sections.append(.init(slug: sectionSlug, title: sectionTitle))
     }
+    guard !sections.isEmpty else {
+      throw PointFreeError.structureChanged(
+        "collection sections",
+        PointFreeClient.baseURL.appendingPathComponent("collections").appendingPathComponent(slug)
+      )
+    }
     return (title, sections)
   }
 
-  public static func parseSection(html: String) throws -> (title: String, groups: [SectionGroup]) {
+  public static func parseSection(html: String, url: URL? = nil) throws -> (title: String, groups: [SectionGroup]) {
     let doc = try SwiftSoup.parse(html)
     let title = try doc.select("h1").first()?.text() ?? ""
     var groups: [SectionGroup] = []
@@ -48,6 +55,8 @@ public enum CollectionsParser {
       if groups.isEmpty { groups.append(.init(heading: "Episodes", episodes: [])) }
       groups[groups.count - 1].episodes.append(episode)
     }
-    return (title, groups.filter { !$0.episodes.isEmpty })
+    let nonEmpty = groups.filter { !$0.episodes.isEmpty }
+    guard !nonEmpty.isEmpty else { throw PointFreeError.structureChanged("section episodes", url) }
+    return (title, nonEmpty)
   }
 }

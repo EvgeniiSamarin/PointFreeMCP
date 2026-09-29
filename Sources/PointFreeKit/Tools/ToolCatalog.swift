@@ -1,4 +1,5 @@
 import Dependencies
+import Foundation
 
 public struct ToolOutput: Equatable, Sendable {
   public var text: String
@@ -15,6 +16,13 @@ public struct ToolCatalog: Sendable {
   public init() {}
 
   public func call(name: String, arguments: ToolArguments) async -> ToolOutput {
+    let output = await dispatch(name: name, arguments: arguments)
+    // Клиент отменил вызов: не выдаём частичный результат или ошибку отменённого запроса за настоящую.
+    if Task.isCancelled { return ToolOutput(text: "Cancelled", isError: true) }
+    return output
+  }
+
+  private func dispatch(name: String, arguments: ToolArguments) async -> ToolOutput {
     do {
       switch name {
       case "searchPointFree": return try await search(arguments)
@@ -42,7 +50,7 @@ public struct ToolCatalog: Sendable {
     let html = try await client.search(q)
     let page = try SearchPageParser.parse(html: html, url: q.url)
     let episodes = (try? await client.episodes()) ?? []
-    let byID = Dictionary(uniqueKeysWithValues: episodes.map { ($0.id, $0) })
+    let byID = Dictionary(episodes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     return ToolOutput(text: MarkdownRenderer.search(query: q, page: page, episodes: byID))
   }
 
@@ -78,7 +86,7 @@ public struct ToolCatalog: Sendable {
   }
 
   func listEpisodes(_ args: ToolArguments) async throws -> ToolOutput {
-    let limit = max(1, args.int("limit") ?? 50)
+    let limit = try limitArg(args, default: 50)
     var episodes = try await client.episodes().sorted { $0.sequence > $1.sequence }
     if let filter = args.string("filter")?.lowercased() {
       episodes = episodes.filter { $0.title.lowercased().contains(filter) }
@@ -88,6 +96,7 @@ public struct ToolCatalog: Sendable {
 
   func fetchCollection(_ args: ToolArguments) async throws -> ToolOutput {
     guard let slug = args.string("slug")?.lowercased() else {
+      if args.string("section") != nil { throw PointFreeError.invalidArgument("`section` requires `slug`") }
       let list = try CollectionsParser.parseIndex(html: try await client.collectionsPage())
       return ToolOutput(text: MarkdownRenderer.collections(list))
     }
@@ -95,12 +104,13 @@ public struct ToolCatalog: Sendable {
       let c = try CollectionsParser.parseCollection(html: try await client.collectionPage(slug), slug: slug)
       return ToolOutput(text: MarkdownRenderer.collection(title: c.title, slug: slug, sections: c.sections))
     }
-    let s = try CollectionsParser.parseSection(html: try await client.sectionPage(slug, section))
+    let url = PointFreeClient.baseURL.appendingPathComponent("collections").appendingPathComponent(slug).appendingPathComponent(section)
+    let s = try CollectionsParser.parseSection(html: try await client.sectionPage(slug, section), url: url)
     return ToolOutput(text: MarkdownRenderer.section(collectionSlug: slug, sectionSlug: section, title: s.title, groups: s.groups))
   }
 
   func listBlogPosts(_ args: ToolArguments) async throws -> ToolOutput {
-    let limit = max(1, args.int("limit") ?? 30)
+    let limit = try limitArg(args, default: 30)
     var posts = try BlogFeedParser.parse(xml: try await client.blogFeed()).sorted { $0.number > $1.number }
     if let filter = args.string("filter")?.lowercased() {
       posts = posts.filter { $0.title.lowercased().contains(filter) }
@@ -140,6 +150,25 @@ public struct ToolCatalog: Sendable {
       return ToolOutput(text: "Login was cancelled (the window was closed before signing in).", isError: true)
     case .failed(let message):
       return ToolOutput(text: PointFreeError.loginFailed(message).userMessage, isError: true)
+    }
+  }
+
+  /// Отсутствующий или null `limit` — значение по умолчанию; присутствующий, но не целый — ошибка.
+  private func limitArg(_ args: ToolArguments, default defaultValue: Int) throws -> Int {
+    switch args.values["limit"] {
+    case .none, .some(.null): return defaultValue
+    case .some(let value):
+      guard let limit = args.int("limit") else {
+        let got: String
+        switch value {
+        case .string(let s): got = "\"\(s)\""
+        case .double(let d): got = String(d)
+        case .bool(let b): got = String(b)
+        default: got = "a non-integer value"
+        }
+        throw PointFreeError.invalidArgument("`limit` must be an integer; got \(got)")
+      }
+      return max(1, limit)
     }
   }
 

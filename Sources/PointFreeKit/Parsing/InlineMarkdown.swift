@@ -14,11 +14,7 @@ public enum InlineMarkdown {
         case "em", "i": out += "*" + (try render(child, baseURL: baseURL)) + "*"
         case "strong", "b": out += "**" + (try render(child, baseURL: baseURL)) + "**"
         case "br": out += "\n"
-        case "a":
-          let href = try child.attr("href")
-          let label = try render(child, baseURL: baseURL)
-          let absolute = URL(string: href, relativeTo: baseURL)?.absoluteString ?? href
-          out += href.isEmpty ? label : "[\(label)](\(absolute))"
+        case "a": out += try anchor(child, baseURL: baseURL)
         case "svg", "img": break
         default: out += try render(child, baseURL: baseURL)
         }
@@ -29,6 +25,17 @@ public enum InlineMarkdown {
       .joined(separator: " ")
       .replacingOccurrences(of: "  ", with: " ")
       .trimmingCharacters(in: .whitespaces)
+  }
+
+  /// Ссылка без текста (иконка-якорь у заголовка) не выводится; `#fragment` относится к исходной
+  /// странице и не разрешается против baseURL, поэтому выводится как обычный текст.
+  static func anchor(_ element: Element, baseURL: URL) throws -> String {
+    let href = try element.attr("href").trimmingCharacters(in: .whitespaces)
+    let label = try render(element, baseURL: baseURL)
+    guard !label.isEmpty else { return "" }
+    guard !href.isEmpty, !href.hasPrefix("#") else { return label }
+    let absolute = URL(string: href, relativeTo: baseURL)?.absoluteString ?? href
+    return "[\(label)](\(absolute))"
   }
 
   /// Исходный текст без нормализации пробелов (для <pre>).

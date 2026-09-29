@@ -62,3 +62,8 @@ func rejectsBadBlogRefs(raw: String) {
     _ = try BlogContentParser.blocks(page: "<html><body><p>nope</p></body></html>", url: nil)
   }
 }
+
+@Test func fragmentOnlyLinksRenderAsPlainTextAndIconAnchorsVanish() throws {
+  let blocks = try BlogContentParser.blocks(html: ##"<h2>Title<a href="#title"><svg></svg></a></h2><p>Please <a href="#x">see</a> <a href="/about"><img src="i.png"></a>below.</p>"##)
+  #expect(blocks == [.heading("Title"), .paragraph("Please see below.")])
+}

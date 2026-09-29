@@ -12,7 +12,7 @@
 
 ## Execution Order
 
-Задачи выполняются в порядке 1–9, **11, 10**, 12, 13, **16**, 14, 15: Task 10 (рендер) использует `BlogPost` из Task 11, а Task 11 зависит только от Tasks 4 и 7.
+Задачи выполняются в порядке 1–9, **11, 10**, 12, 13, **16**, 14, **17**, 15: Task 10 (рендер) использует `BlogPost` из Task 11, а Task 11 зависит только от Tasks 4 и 7.
 
 ## Global Constraints
 
@@ -3644,6 +3644,46 @@ Expected: markdown поста с несколькими блоками ```swift 
 ```bash
 git add Sources/PointFreeKit Tests/PointFreeKitTests
 git commit -m "feat: fetch full blog post text from the post page" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
+```
+
+---
+
+### Task 17: Гигиена по замечаниям swift-server-lint
+
+**Files:**
+- Modify: `Sources/PointFreeKit/Client/PointFreeClient.swift`, `Sources/PointFreeKit/Client/SearchQuery.swift`, `Sources/PointFreeKit/Models/Episode.swift`, `Sources/PointFreeKit/Models/EpisodeRef.swift`, `Sources/PointFreeKit/Tools/ToolArguments.swift`, `Sources/PointFreeKit/Tools/ToolCatalog.swift`, `Sources/PointFreeMCP/Commands/Serve.swift`, `Sources/PointFreeMCP/LoginWindow/LoginWindowController.swift`
+- Modify: `Tests/PointFreeKitTests/EpisodeDecodingTests.swift`, `EpisodePageParserTests.swift`, `MarkdownRendererTests.swift`, `MemoryCacheTests.swift`, `PointFreeClientTests.swift`, `ToolCatalogTests.swift`
+
+**Interfaces:** публичные сигнатуры не меняются; поведение не меняется; все 61 тест проходят без изменений ожиданий.
+
+В проекте у владельца стоит PostToolUse-хук `swift-server-lint`. Часть его правил к этому пакету не относится (`foundation-avoidance`, `postgres.sql-injection` на интерполяции markdown, `cyclomatic-complexity` парсеров), они остаются как есть и объясняются в README (Task 15). Исправляются только содержательные замечания:
+
+- [ ] **Step 1: Force unwrap → безопасные конструкции**
+
+  - `PointFreeClient.swift`: `baseURL` — оставить как `URL(string:)!` нельзя по правилу; заменить на `static let baseURL: URL = { guard let url = URL(string: "https://www.pointfree.co") else { preconditionFailure("invalid base URL") }; return url }()`. Аналогично `URLComponents(url:resolvingAgainstBaseURL:)!` и `components.url!` в `get` — через `guard let … else { throw PointFreeError.network("invalid URL for \(path)") }`.
+  - `SearchQuery.swift`: `URLComponents(...)!` и `components.url!` — `guard let`, с `preconditionFailure` (URL строится из константы и корректных query items; это инвариант программы).
+  - `Episode.swift`: `pageURL` — `URL(string:)!` → та же схема с `preconditionFailure` (число в пути всегда валидно).
+  - `LoginWindowController.swift`: `UUID(uuidString:)!` и `URL(string:)!` — константы, вычислить через замыкание с `preconditionFailure`; `NSEvent.otherEvent(...)!` — `if let wake = … { NSApp.postEvent(wake, atStart: true) }`; `window`/`webView` как IUO → обычные optional с `guard let` в местах использования (или инициализировать в `init` и сделать `let`; предпочесть `let`, создавая окно и webView в `init`, а показывать в `run`).
+  - Тесты: `TimeZone(identifier: "UTC")!` → `try #require(TimeZone(identifier: "UTC"))`; `URL(string: …)!` в тестах → `try #require(URL(string: …))` (функции тестов уже `throws` или сделать `throws`).
+
+- [ ] **Step 2: `@unchecked Sendable` с комментарием SAFETY**
+
+  В `MemoryCacheTests.swift`, `PointFreeClientTests.swift`, `ToolCatalogTests.swift` над каждым `@unchecked Sendable` классом добавить строку `// SAFETY: тест обращается к объекту последовательно из одного таска; синхронизация не нужна.` В `ToolCatalogTests.swift` три одинаковых `Flag` заменить одним приватным `final class Flag: @unchecked Sendable { var value = false }` на уровне файла (с тем же комментарием) и использовать поле `value`.
+
+- [ ] **Step 3: Неиспользуемые импорты**
+
+  Удалить `import Foundation` там, где хук отмечает и компилятор не требует: `EpisodeRef.swift` (используются `trimmingCharacters`, значит Foundation нужен — оставить и проверить сборкой), `ToolArguments.swift`, `ToolCatalog.swift`, `Serve.swift`, `EpisodeDecodingTests.swift`, `EpisodePageParserTests.swift`. Правило: убрать, собрать; если сборка падает — вернуть.
+
+- [ ] **Step 4: Сборка, тесты, хук**
+
+  Run: `swift build && swift test`
+  Expected: 0 предупреждений компилятора, 61 тест PASS. Затем `~/.claude/hooks/swift-server-lint.sh` (если запускается вручную) не должен показывать `force-unwrap`, `implicitly-unwrapped-optional`, `unchecked-sendable` и `unused-import`; остаются только `cyclomatic-complexity`, `foundation-avoidance` и `postgres.sql-injection`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add Sources Tests
+git commit -m "chore: remove force unwraps, document unchecked Sendable, drop unused imports" -m "Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
 
 ---

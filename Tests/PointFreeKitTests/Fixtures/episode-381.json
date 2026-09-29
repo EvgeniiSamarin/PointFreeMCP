@@ -1,0 +1,14 @@
+{
+  "image":"https://example.invalid/0381.jpeg",
+  "references":[{"blurb":"> Note text","link":"https://example.invalid/fcis","publishedAt":363744000,"title":"Functional Core, Imperative Shell","author":"Gary Bernhardt"}],
+  "subscriberOnly":true,
+  "video":{"id":"abc","bytesLength":1,"downloadUrl":{"s3":{"hd1080":"x","sd540":"y","hd720":"z"}}},
+  "publishedAt":812246400,
+  "id":381,
+  "codeSampleDirectory":"0381-isolation-design-pt2",
+  "blurb":"Blurb 381",
+  "title":"Designing for Isolation: Naively",
+  "sequence":381,
+  "previousEpisodesInCollection":[],
+  "length":1008
+}

@@ -13,6 +13,8 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
   private var window: NSWindow!
   private var webView: WKWebView!
   private var timeoutTimer: Timer?
+  private var pollTimer: Timer?
+  private var cookieStore: WKHTTPCookieStore?  // WebKit не удерживает наблюдателей; прокси хранилища должен жить
   private var validating = false
   private var rejected: Set<String> = []
   private(set) var result: Result?
@@ -35,7 +37,9 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     config.defaultWebpagePreferences.allowsContentJavaScript = true
     webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 720), configuration: config)
     webView.navigationDelegate = self
-    config.websiteDataStore.httpCookieStore.add(self)
+    let store = webView.configuration.websiteDataStore.httpCookieStore
+    cookieStore = store
+    store.add(self)
 
     window = NSWindow(
       contentRect: webView.frame,
@@ -53,6 +57,9 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     log("opening \(loginURL.absoluteString)")
     webView.load(URLRequest(url: loginURL))
 
+    pollTimer = Timer.scheduledTimer(withTimeInterval: 2, repeats: true) { [weak self] _ in
+      MainActor.assumeIsolated { self?.checkCookies() }
+    }
     timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
       // Не Task { @MainActor }: пока крутится NSApp.run() внутри main-actor задачи, executor главного актора не обслуживается.
       MainActor.assumeIsolated { self?.finish(.timedOut) }
@@ -63,18 +70,25 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
   }
 
   nonisolated func cookiesDidChange(in cookieStore: WKHTTPCookieStore) {
+    FileHandle.standardError.write(Data("login: cookies changed\n".utf8))
     RunLoop.main.perform(inModes: [.common]) { MainActor.assumeIsolated { self.checkCookies() } }
   }
 
   private func checkCookies() {
     guard result == nil, !validating else { return }
-    webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
+    (cookieStore ?? webView.configuration.websiteDataStore.httpCookieStore).getAllCookies { [weak self] cookies in
       guard let self, self.result == nil, !self.validating else { return }
+      let shared = HTTPCookieStorage.shared.cookies?.count ?? 0
+      let list = cookies.map { "\($0.name)@\($0.domain)" }.joined(separator: ", ")
+      self.log("cookie store has \(cookies.count) cookies (HTTPCookieStorage.shared: \(shared)); \(list)")
       guard let cookie = cookies.first(where: {
         $0.name == PointFreeClient.cookieName
-          && ($0.domain == "www.pointfree.co" || $0.domain.hasSuffix(".pointfree.co"))
+          && ($0.domain == "www.pointfree.co" || $0.domain == "pointfree.co" || $0.domain.hasSuffix(".pointfree.co"))
           && !self.rejected.contains($0.value)
-      }) else { return }
+      }) else {
+        self.log("no new pf_session candidate")
+        return
+      }
       self.validating = true
       self.log("pf_session candidate (domain=\(cookie.domain)) validating")
       let value = cookie.value
@@ -139,7 +153,8 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     guard result == nil else { return }
     result = value
     timeoutTimer?.invalidate()
-    webView.configuration.websiteDataStore.httpCookieStore.remove(self)
+    pollTimer?.invalidate()
+    cookieStore?.remove(self)
     window.delegate = nil
     window.orderOut(nil)
     NSApp.stop(nil)

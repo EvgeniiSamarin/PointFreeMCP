@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PointFreeKit
 
@@ -45,4 +46,13 @@ import Testing
   #expect(throws: PointFreeError.structureChanged("article", nil)) {
     _ = try EpisodePageParser.parse(html: "<html><body><p>nope</p></body></html>", url: nil)
   }
+}
+
+@Test func duplicateChapterSlugsGetNumericSuffixes() throws {
+  let html = try fixtureString("episode-free.html")
+    .replacingOccurrences(of: #"id="introduction""#, with: #"id="introducing""#)
+    .replacingOccurrences(of: #"id="composition""#, with: #"id="introducing""#)
+  let page = try EpisodePageParser.parse(html: html, url: nil)
+  #expect(page.transcript.chapters.map(\.slug) == ["introducing", "introducing-2"])
+  #expect(page.transcript.chapter(matching: .slug("introducing-2"))?.title == "Composition")
 }

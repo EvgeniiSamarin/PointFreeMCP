@@ -23,6 +23,14 @@ public enum EpisodePageParser {
 
     var chapters: [Transcript.Chapter] = []
     var pendingSlug: String?
+    var slugCounts: [String: Int] = [:]
+
+    /// Повтор slug в пределах страницы получает суффикс -2, -3, …; первое вхождение без изменений.
+    func uniqueSlug(_ base: String) -> String {
+      let count = (slugCounts[base] ?? 0) + 1
+      slugCounts[base] = count
+      return count == 1 ? base : "\(base)-\(count)"
+    }
 
     func append(_ block: Transcript.Block) {
       // Тело транскрипта начинается с первого заголовка главы; блоки до него не учитываются.
@@ -52,7 +60,7 @@ public enum EpisodePageParser {
       case "h4":
         let title = node.ownText().trimmingCharacters(in: .whitespaces)
         guard !title.isEmpty else { continue }
-        chapters.append(.init(slug: pendingSlug ?? slugify(title), title: title))
+        chapters.append(.init(slug: uniqueSlug(pendingSlug ?? slugify(title)), title: title))
         pendingSlug = nil
       case "h2", "h3", "h5", "h6":
         let text = try InlineMarkdown.render(node)

@@ -7,7 +7,10 @@ struct Logout: ParsableCommand {
 
   func run() throws {
     @Dependency(\.sessionStore) var store
+    // Нечитаемый файл тоже считаем сессией: clear() всё равно его удалит.
+    let hadSession: Bool
+    do { hadSession = try store.load() != nil } catch { hadSession = true }
     try store.clear()
-    print("Session removed.")
+    print(hadSession ? "Session removed." : "No saved session.")
   }
 }

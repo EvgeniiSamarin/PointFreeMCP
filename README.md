@@ -36,6 +36,8 @@ Members-only episodes need a signed-in session first: run `pointfree-mcp login` 
   - `--cookie <value>` is a fallback: pass the value of the `pf_session` cookie copied from your browser's dev tools.
   - `--timeout <seconds>` limits how long the window waits (default 300).
   - Exit codes: 0 saved, 1 cancelled or Quit, 2 cookie rejected, 3 timed out, 4 other error.
+  - While the window is open, `pointfree-mcp` shows a Dock icon and a minimal menu (⌘Q cancels, standard Edit shortcuts work in the form fields). The icon disappears when the window closes.
+  - Passkeys and hardware security keys may not work inside the embedded window. Sign in to GitHub with a password and a 2FA code instead, or use `--cookie`.
   - The `login` tool also accepts a `force` argument to sign in again even when a saved session exists.
 - `pointfree-mcp status` shows whether a valid session is saved.
 - `pointfree-mcp logout` removes the saved session.

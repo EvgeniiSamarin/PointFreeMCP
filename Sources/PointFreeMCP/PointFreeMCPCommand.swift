@@ -1,7 +1,6 @@
 import ArgumentParser
 import PointFreeKit
 
-@main
 struct PointFreeMCPCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "pointfree-mcp",

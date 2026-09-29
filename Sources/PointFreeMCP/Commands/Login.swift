@@ -12,6 +12,9 @@ struct Login: AsyncParsableCommand {
   @Option(help: "Seconds to wait for the login to complete.")
   var timeout: Double = 300
 
+  /// Результат окна входа; заполняется в EntryPoint.main() до старта async-команды.
+  nonisolated(unsafe) static var windowOutcome: LoginWindowController.Result?
+
   @MainActor
   func run() async throws {
     do {
@@ -35,10 +38,12 @@ struct Login: AsyncParsableCommand {
       value = cookie
       expires = nil
     } else {
-      FileHandle.standardError.write(Data("Opening pointfree.co login window…\n".utf8))
-      let validate = client.validateSession
-      let controller = LoginWindowController(validate: { try await validate($0) })
-      switch controller.run(timeout: timeout) {
+      // Окно уже показано из EntryPoint.main() на настоящем главном потоке (вне async-задачи), см. EntryPoint.swift.
+      guard let outcome = Login.windowOutcome else {
+        FileHandle.standardError.write(Data("Login window did not run.\n".utf8))
+        throw ExitCode(4)
+      }
+      switch outcome {
       case .cookie(let v, let e): value = v; expires = e
       case .cancelled:
         FileHandle.standardError.write(Data("Login cancelled.\n".utf8))

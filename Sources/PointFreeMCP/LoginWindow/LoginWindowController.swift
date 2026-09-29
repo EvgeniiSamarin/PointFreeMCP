@@ -4,7 +4,7 @@ import PointFreeKit
 import WebKit
 
 @MainActor
-final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStoreObserver {
+final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStoreObserver, WKNavigationDelegate {
   enum Result: Equatable { case cookie(String, expires: Date?), cancelled, timedOut }
 
   private static let dataStoreID = UUID(uuidString: "6B1C8E8A-3C0B-4D4E-9C2C-0F8B8C1D2E3F")!
@@ -17,6 +17,10 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
   private var rejected: Set<String> = []
   private(set) var result: Result?
 
+  private func log(_ message: String) {
+    FileHandle.standardError.write(Data("login: \(message)\n".utf8))
+  }
+
   init(validate: @escaping @Sendable (String) async throws -> Bool) {
     self.validate = validate
     super.init()
@@ -28,7 +32,9 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
 
     let config = WKWebViewConfiguration()
     config.websiteDataStore = WKWebsiteDataStore(forIdentifier: Self.dataStoreID)
+    config.defaultWebpagePreferences.allowsContentJavaScript = true
     webView = WKWebView(frame: NSRect(x: 0, y: 0, width: 900, height: 720), configuration: config)
+    webView.navigationDelegate = self
     config.websiteDataStore.httpCookieStore.add(self)
 
     window = NSWindow(
@@ -42,7 +48,9 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
     window.delegate = self
     window.center()
     window.makeKeyAndOrderFront(nil)
+    window.orderFrontRegardless()
     app.activate()
+    log("opening \(loginURL.absoluteString)")
     webView.load(URLRequest(url: loginURL))
 
     timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
@@ -68,23 +76,30 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
           && !self.rejected.contains($0.value)
       }) else { return }
       self.validating = true
+      self.log("pf_session candidate (domain=\(cookie.domain)) validating")
       let value = cookie.value
       let expires = cookie.expiresDate
       let validate = self.validate
       // Валидация идёт вне главного актора; результат возвращаем через RunLoop (см. комментарий у таймера).
       Task.detached {
-        let outcome: Bool? = try? await validate(value)  // nil — ошибка (сеть), не приговор cookie
+        var outcome: Bool?  // nil — ошибка (сеть), не приговор cookie
+        var errorText = ""
+        do { outcome = try await validate(value) } catch { errorText = error.localizedDescription }
+        let failure = errorText
         RunLoop.main.perform(inModes: [.common]) {
           MainActor.assumeIsolated {
             self.validating = false
             switch outcome {
             case .some(true):
+              self.log("pf_session accepted")
               self.finish(.cookie(value, expires: expires))
             case .some(false):
+              self.log("pf_session rejected by pointfree.co")
               self.rejected.insert(value)  // анонимная сессия (например, состояние OAuth); ждём дальше
               self.checkCookies()  // за время проверки могла прийти другая cookie
             case .none:
               // Временная ошибка: не запоминаем как отвергнутую, повторяем через 2 с (границу задаёт --timeout).
+              self.log("validation error: \(failure), retrying in 2 s")
               Timer.scheduledTimer(withTimeInterval: 2, repeats: false) { [weak self] _ in
                 MainActor.assumeIsolated { self?.checkCookies() }
               }
@@ -93,6 +108,27 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
         }
       }
     }
+  }
+
+  func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
+    log("didStartProvisionalNavigation \(webView.url?.absoluteString ?? "-")")
+  }
+
+  func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    log("didFinish \(webView.url?.absoluteString ?? "-")")
+  }
+
+  func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
+    log("didFailProvisionalNavigation \(webView.url?.absoluteString ?? loginURL.absoluteString): \(error.localizedDescription)")
+  }
+
+  func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+    log("didFail \(webView.url?.absoluteString ?? "-"): \(error.localizedDescription)")
+  }
+
+  func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    log("web content process terminated")
+    webView.reload()
   }
 
   func windowWillClose(_ notification: Notification) {

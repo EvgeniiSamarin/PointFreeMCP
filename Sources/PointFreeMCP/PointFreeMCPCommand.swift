@@ -6,10 +6,8 @@ struct PointFreeMCPCommand: AsyncParsableCommand {
   static let configuration = CommandConfiguration(
     commandName: "pointfree-mcp",
     abstract: "MCP server for pointfree.co",
-    version: PointFreeKit.version
+    version: PointFreeKit.version,
+    subcommands: [Serve.self, Status.self, Logout.self],
+    defaultSubcommand: Serve.self
   )
-
-  func run() async throws {
-    print("pointfree-mcp \(PointFreeKit.version)")
-  }
 }

@@ -39,8 +39,6 @@ private func transcript() -> Transcript {
 
   **Brandon**
 
-  [0:05](https://www.pointfree.co/episodes/381#t5)
-
   Hello `x`.
 
   ```swift
@@ -51,8 +49,6 @@ private func transcript() -> Transcript {
 
   ## Next time [15:02](https://www.pointfree.co/episodes/381#t902)
 
-  [15:02](https://www.pointfree.co/episodes/381#t902)
-
   Bye.
 
   > Note.
@@ -62,6 +58,21 @@ private func transcript() -> Transcript {
 
   """
   #expect(md == expected)
+}
+
+@Test func keepsTimestampsOtherThanTheChapterStart() throws {
+  let t = Transcript(chapters: [
+    .init(slug: "a", title: "A", startTimestamp: 5, blocks: [.timestamp(5), .paragraph("One."), .timestamp(68), .paragraph("Two.")]),
+  ])
+  let md = try MarkdownRenderer.episode(detail: detail381(), transcript: t, section: nil)
+  #expect(md.hasSuffix("## A [0:05](https://www.pointfree.co/episodes/381#t5)\n\nOne.\n\n[1:08](https://www.pointfree.co/episodes/381#t68)\n\nTwo.\n\n"))
+}
+
+@Test func quotesEveryLineOfAMultiLineBlurb() throws {
+  var detail = detail381()
+  detail.blurb = "Line one.\n\nLine two."
+  let md = try MarkdownRenderer.episode(detail: detail, transcript: Transcript(chapters: []), section: nil)
+  #expect(md.contains("\n\n> Line one.\n>\n> Line two.\n\n## References"))
 }
 
 @Test func rendersOnlyRequestedSection() throws {

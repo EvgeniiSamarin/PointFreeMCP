@@ -21,7 +21,7 @@ public enum MarkdownRenderer {
     out += "- Access: \(detail.accessLabel)\n"
     out += "- URL: \(base)\n"
     if let code = detail.codeSampleURL { out += "- Code samples: \(code.absoluteString)\n" }
-    out += "\n> \(detail.blurb)\n\n"
+    out += "\n" + quoted(detail.blurb) + "\n\n"
     if !detail.references.isEmpty {
       out += "## References\n\n"
       for r in detail.references {
@@ -45,9 +45,34 @@ public enum MarkdownRenderer {
       out += "## \(chapter.title)"
       if let ts = chapter.startTimestamp { out += " " + tsLink(base, ts) }
       out += "\n\n"
-      out += blocks(chapter.blocks, base: base)
+      out += blocks(droppingStartTimestamp(of: chapter), base: base)
     }
     return out
+  }
+
+  /// Каждая строка с префиксом `> `, чтобы многострочный blurb оставался одной цитатой.
+  static func quoted(_ text: String) -> String {
+    text.replacingOccurrences(of: "\r\n", with: "\n")
+      .split(separator: "\n", omittingEmptySubsequences: false)
+      .map { $0.isEmpty ? ">" : "> \($0)" }
+      .joined(separator: "\n")
+  }
+
+  /// Таймкод начала главы уже есть в заголовке: первый таймкод главы (перед ним допускается
+  /// только имя спикера) не повторяем, если он совпадает с `startTimestamp`.
+  static func droppingStartTimestamp(of chapter: Transcript.Chapter) -> [Transcript.Block] {
+    guard let start = chapter.startTimestamp else { return chapter.blocks }
+    var blocks = chapter.blocks
+    for (index, block) in blocks.enumerated() {
+      switch block {
+      case .speaker: continue
+      case .timestamp(let s) where s == start:
+        blocks.remove(at: index)
+        return blocks
+      default: return blocks
+      }
+    }
+    return blocks
   }
 
   /// Общий рендер блоков без глав (блог).

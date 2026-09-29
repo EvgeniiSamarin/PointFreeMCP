@@ -1,5 +1,7 @@
 # PointFreeMCP
 
+[![CI](https://github.com/EvgeniiSamarin/PointFreeMCP/actions/workflows/ci.yml/badge.svg)](https://github.com/EvgeniiSamarin/PointFreeMCP/actions/workflows/ci.yml)
+
 A [Point-Free](https://www.pointfree.co) MCP server for Claude Code and any other MCP client, modelled after [sosumi](https://sosumi.ai) for Apple documentation. It lets your coding assistant search the Point-Free video catalog, read episode transcripts with all their code, browse collections and read the Point-Free Pointers blog, and returns everything as clean markdown. Members-only transcripts are fetched with your own Point-Free membership after a one-time GitHub sign-in.
 
 Nothing is downloaded ahead of time: every tool call goes to pointfree.co on demand, responses are cached in memory for an hour, and transcripts are never written to disk.

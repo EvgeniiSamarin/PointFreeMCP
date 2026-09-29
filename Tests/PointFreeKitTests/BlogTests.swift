@@ -44,3 +44,21 @@ func rejectsBadBlogRefs(raw: String) {
     _ = try BlogFeedParser.parse(xml: "<html>not a feed</html>")
   }
 }
+
+@Test func parsesBlogPostPageArticle() throws {
+  let blocks = try BlogContentParser.blocks(page: fixtureString("blog-post.html"), url: nil)
+  #expect(blocks == [
+    .paragraph("We are excited to announce [LazyState](https://github.com/pointfreeco/swiftui-lazy-state) **1.0**."),
+    .heading("Usage"),
+    .code("@LazyState var model = Model()\n"),
+    .listItem("One"),
+    .listItem("Two with `code`"),
+    .quote("Quoted."),
+  ])
+}
+
+@Test func blogPageWithoutArticleIsStructureChange() {
+  #expect(throws: PointFreeError.structureChanged("article", nil)) {
+    _ = try BlogContentParser.blocks(page: "<html><body><p>nope</p></body></html>", url: nil)
+  }
+}

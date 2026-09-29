@@ -118,7 +118,8 @@ public struct ToolCatalog: Sendable {
     guard let post = posts.first(where: { $0.number == ref.number }) else {
       throw PointFreeError.invalidArgument("Blog post \(ref.number) not found in the feed")
     }
-    let blocks = try BlogContentParser.blocks(html: post.contentHTML)
+    let html = try await client.blogPostPage(post.slug)
+    let blocks = try BlogContentParser.blocks(page: html, url: post.url)
     return ToolOutput(text: MarkdownRenderer.blogPost(post, blocks: blocks))
   }
 

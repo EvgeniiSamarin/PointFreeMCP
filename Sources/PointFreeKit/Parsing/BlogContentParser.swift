@@ -2,10 +2,25 @@ import Foundation
 import SwiftSoup
 
 public enum BlogContentParser {
+  /// HTML-фрагмент (например, из Atom-фида).
   public static func blocks(html: String) throws -> [Transcript.Block] {
     let doc = try SwiftSoup.parseBodyFragment(html)
+    guard let body = doc.body() else { return [] }
+    return try blocks(in: body)
+  }
+
+  /// Полная страница поста: тело — `article`.
+  public static func blocks(page html: String, url: URL?) throws -> [Transcript.Block] {
+    let doc = try SwiftSoup.parse(html)
+    guard let article = try doc.select("article").first() else {
+      throw PointFreeError.structureChanged("article", url)
+    }
+    return try blocks(in: article)
+  }
+
+  public static func blocks(in root: Element) throws -> [Transcript.Block] {
     var blocks: [Transcript.Block] = []
-    for node in try doc.body()!.select("h1, h2, h3, h4, h5, h6, p, pre, li, blockquote") {
+    for node in try root.select("h1, h2, h3, h4, h5, h6, p, pre, li, blockquote") {
       let insideQuoteOrItem = node.parents().contains { ["li", "blockquote"].contains($0.tagName()) }
       switch node.tagName() {
       case "h1", "h2", "h3", "h4", "h5", "h6":

@@ -26,3 +26,17 @@ import Testing
   #expect(s.isExpired(now: Date(timeIntervalSince1970: 101)))
   #expect(!s.isExpired(now: Date(timeIntervalSince1970: 99)))
 }
+
+@Test func sessionStoreLeavesExistingDirectoryModeAlone() throws {
+  let fm = FileManager.default
+  let dir = fm.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+  try fm.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o755])
+  try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: dir.path)
+  defer { try? fm.removeItem(at: dir) }
+
+  try SessionStore.file(in: dir).save(Session(cookie: "x", expiresAt: Date(timeIntervalSince1970: 2_000_000_000), savedAt: Date(timeIntervalSince1970: 0)))
+  let dirAttrs = try fm.attributesOfItem(atPath: dir.path)
+  #expect((dirAttrs[.posixPermissions] as? Int) == 0o755)
+  let fileAttrs = try fm.attributesOfItem(atPath: dir.appendingPathComponent("session.json").path)
+  #expect((fileAttrs[.posixPermissions] as? Int) == 0o600)
+}

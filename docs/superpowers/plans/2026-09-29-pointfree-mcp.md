@@ -1143,7 +1143,7 @@ git commit -m "feat: PointFreeClient with caching and session cookie"
   <ol><li>Item</li></ol>
 </pf-vstack></pf-markdown></article>
 ```
-Оглавление (TOC) вне `article`: `<li>…<a href="#introduction">…</a><a data-timestamp="68" href="#t68">1:08</a></li>`. У платного эпизода без сессии `article` содержит только первые 1–2 главы (превью), а в TOC глав больше: `tocChapterCount > transcript.chapters.count` означает «обрезано».
+Оглавление (TOC) вне `article`: `<li><pf-hstack><a href="#introduction">…</a><a data-timestamp="68" href="#t68">1:08</a></pf-hstack></li>` — ссылки не прямые дети `li`, поэтому TOC считается по `a[data-timestamp]` вне `article` (уникальные href). У платного эпизода без сессии `article` содержит только первые 1–2 главы (превью), а в TOC глав больше: `tocChapterCount > transcript.chapters.count` означает «обрезано».
 
 - [ ] **Step 1: Фикстуры**
 
@@ -1369,8 +1369,10 @@ public enum EpisodePageParser {
       throw PointFreeError.structureChanged("article", url)
     }
 
-    // TOC: ссылки на главы вне article (href="#slug" без data-timestamp)
-    let tocLinks = try doc.select("li > a[href^=#]:not([data-timestamp])")
+    // TOC: таймкоды глав вне article. На живой странице ссылки оглавления лежат
+    // внутри pf-hstack внутри li, а боковые ссылки #references/#downloads без таймкода,
+    // поэтому считаем именно a[data-timestamp] вне article (по уникальному href).
+    let tocLinks = try doc.select("a[data-timestamp]")
       .filter { link in !(link.parents().contains { $0.tagName() == "article" }) }
     let tocChapterCount = Set(try tocLinks.map { try $0.attr("href") }).count
 

@@ -45,18 +45,7 @@ public enum MarkdownRenderer {
       out += "## \(chapter.title)"
       if let ts = chapter.startTimestamp { out += " " + tsLink(base, ts) }
       out += "\n\n"
-      for block in chapter.blocks {
-        switch block {
-        case .timestamp(let s): out += tsLink(base, s) + "\n\n"
-        case .speaker(let name): out += "**\(name)**\n\n"
-        case .paragraph(let text): out += text + "\n\n"
-        case .code(let code): out += "```swift\n\(code.hasSuffix("\n") ? code : code + "\n")```\n\n"
-        case .listItem(let text): out += "- \(text)\n"
-        case .quote(let text): out += "> \(text)\n\n"
-        case .heading(let text): out += "### \(text)\n\n"
-        }
-      }
-      if case .listItem = chapter.blocks.last { out += "\n" }
+      out += blocks(chapter.blocks, base: base)
     }
     return out
   }

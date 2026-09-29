@@ -97,6 +97,8 @@ docs/superpowers/{specs,plans}/
 - Fallback: `pointfree-mcp login --cookie <value>` сохраняет значение без окна после той же проверки.
 - `pointfree-mcp logout` удаляет файл. `pointfree-mcp status` печатает состояние сессии.
 
+Имена в коде задаёт план, а не спека: `HTTPClient.fetch` вместо `data(for:)`, `LoginLauncher` вместо `ProcessRunner`, методы клиента `episodePage`/`collectionsPage`/`sectionPage`.
+
 ## Сеть и кэш
 
 - `HTTPClient` — dependency с методом `data(for: URLRequest)`; live-реализация на `URLSession` с таймаутом 20 с и User-Agent `pointfree-mcp/<version>`.
@@ -119,7 +121,9 @@ docs/superpowers/{specs,plans}/
 | Нет сети, таймаут, 5xx | `isError`, текст с кодом и URL |
 | 404 эпизода/коллекции | `isError`, «не найдено» |
 | Платный эпизод без сессии | `isError`, «вызовите login» |
-| Сессия есть, но сайт вернул только оглавление | `isError`, «сессия истекла, вызовите login» и удаление сохранённой сессии |
+| Сессия есть, но сайт её отверг (проверка `/account` не 200) | `isError`, «сессия истекла, вызовите login», сохранённая сессия удаляется |
+| Сессия валидна, но транскрипт обрезан (нет подписки или устаревшая страница) | `isError`, «нет подписки, вызовите login с force», сессия сохраняется |
+| Файл сессии есть, но срок 7 дней истёк | `isError`, «сессия истекла, вызовите login», файл удаляется |
 | Неизвестный аргумент | `isError`, описание допустимых значений |
 
 ## Тестирование

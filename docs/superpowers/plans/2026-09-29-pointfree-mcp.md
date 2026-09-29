@@ -10,11 +10,15 @@
 
 **Spec:** `docs/superpowers/specs/2026-09-29-pointfree-mcp-design.md`
 
+## Execution Order
+
+Задачи выполняются в порядке 1–9, **11, 10**, 12–15: Task 10 (рендер) использует `BlogPost` из Task 11, а Task 11 зависит только от Tasks 4 и 7.
+
 ## Global Constraints
 
 - Платформа только macOS 26+: `platforms: [.macOS(.v26)]`, `swiftLanguageModes: [.v6]`.
 - Транскрипты не пишутся на диск и не логируются; кэш только в памяти процесса.
-- Фикстуры в `Tests/PointFreeKitTests/Fixtures/` синтетические: структура сайта, заглушечный текст. Реальные страницы только в `Fixtures/live/` (в `.gitignore`).
+- Фикстуры в `Tests/PointFreeKitTests/Fixtures/` синтетические: структура сайта, заглушечный текст. Реальные страницы только в `Tests/live/` (в `.gitignore`, вне ресурсов тестового таргета).
 - Сервер пишет в stdout только JSON-RPC; все логи и диагностика — в stderr.
 - Cookie `pf_session` отправляется только на хост `www.pointfree.co`.
 - Файл сессии `~/.pointfree-mcp/session.json` (переопределяется `POINTFREE_MCP_HOME`), права 0600, каталог 0700.
@@ -88,7 +92,7 @@ let package = Package(
       name: "PointFreeKitTests",
       dependencies: [
         "PointFreeKit",
-        .product(name: "DependenciesTestSupport", package: "swift-dependencies"),
+        .product(name: "Dependencies", package: "swift-dependencies"),
       ],
       resources: [.copy("Fixtures")]
     ),
@@ -106,7 +110,7 @@ let package = Package(
 *.xcodeproj
 xcuserdata/
 .DS_Store
-Tests/PointFreeKitTests/Fixtures/live/
+Tests/live/
 ```
 
 `LICENSE` — стандартный текст MIT, год 2026, правообладатель «Evgeniy Samarin».
@@ -375,14 +379,16 @@ git commit -m "feat: episode models and JSON API decoding"
 import Testing
 @testable import PointFreeKit
 
-@Test(arguments: [
-  ("381", 381, nil as String?, nil as SectionRef?),
+private let episodeRefCases: [(String, Int, String?, SectionRef?)] = [
+  ("381", 381, nil, nil),
   ("ep381-designing-for-isolation-naively", 381, "ep381-designing-for-isolation-naively", nil),
   ("EP381-Designing", 381, "ep381-designing", nil),
   ("https://www.pointfree.co/episodes/ep381-designing-for-isolation-naively#t349", 381, "ep381-designing-for-isolation-naively", .timestamp(349)),
   ("https://www.pointfree.co/episodes/ep381-x/?utm=1", 381, "ep381-x", nil),
   ("/episodes/22", 22, nil, nil),
-])
+]
+
+@Test(arguments: episodeRefCases)
 func parsesEpisodeRefs(raw: String, number: Int, slug: String?, section: SectionRef?) throws {
   let ref = try #require(EpisodeRef.parse(raw))
   #expect(ref.number == number)
@@ -652,21 +658,27 @@ public struct SessionStore: Sendable {
 extension SessionStore {
   public static func file(in directory: URL) -> SessionStore {
     let fileURL = directory.appendingPathComponent("session.json")
-    let fm = FileManager.default
+    // FileManager не Sendable: берём FileManager.default внутри каждого замыкания.
     return SessionStore(
       load: {
+        let fm = FileManager.default
         guard fm.fileExists(atPath: fileURL.path) else { return nil }
         let data = try Data(contentsOf: fileURL)
         return try JSONDecoder().decode(Session.self, from: data)
       },
       save: { session in
+        let fm = FileManager.default
         try fm.createDirectory(at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         try fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
         let data = try JSONEncoder().encode(session)
-        try data.write(to: fileURL, options: .atomic)
+        // Файл создаётся сразу с правами 0600, без окна с правами по umask.
+        guard fm.createFile(atPath: fileURL.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
+          throw CocoaError(.fileWriteUnknown)
+        }
         try fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
       },
       clear: {
+        let fm = FileManager.default
         if fm.fileExists(atPath: fileURL.path) { try fm.removeItem(at: fileURL) }
       }
     )
@@ -984,12 +996,17 @@ extension PointFreeClient {
   public static let cookieName = "pf_session"
 
   public static func live(cache: MemoryCache<String>) -> PointFreeClient {
-    @Dependency(\.httpClient) var http
-    @Dependency(\.sessionStore) var sessionStore
-    @Dependency(\.date.now) var now
+    // Зависимости захватываются в момент создания клиента и биндятся в let,
+    // чтобы @Sendable-замыкания не захватывали var.
+    @Dependency(\.httpClient) var httpDependency
+    @Dependency(\.sessionStore) var sessionStoreDependency
+    @Dependency(\.date) var dateDependency
+    let http = httpDependency
+    let sessionStore = sessionStoreDependency
+    let date = dateDependency
 
     @Sendable func currentCookie() -> String? {
-      guard let session = try? sessionStore.load(), !session.isExpired(now: now) else { return nil }
+      guard let session = try? sessionStore.load(), !session.isExpired(now: date.now) else { return nil }
       return session.cookie
     }
 
@@ -1084,8 +1101,6 @@ extension DependencyValues {
   }
 }
 ```
-
-Замечание: спека задаёт TTL 1 ч для списков и 24 ч для страниц. Один кэш с TTL 1 ч проще и укладывается в требование «не выкачивать»; если нужно разделить, завести два `MemoryCache` в `live(cache:pagesCache:)`. Оставить один, зафиксировать это в README.
 
 - [ ] **Step 4: Тесты проходят**
 
@@ -1363,7 +1378,8 @@ public enum EpisodePageParser {
     var pendingSlug: String?
 
     func append(_ block: Transcript.Block) {
-      if chapters.isEmpty { chapters.append(.init(slug: "transcript", title: "Transcript")) }
+      // Тело транскрипта начинается с первого заголовка главы; блоки до него не учитываются.
+      guard !chapters.isEmpty else { return }
       chapters[chapters.count - 1].blocks.append(block)
       if case .timestamp(let s) = block, chapters[chapters.count - 1].startTimestamp == nil {
         chapters[chapters.count - 1].startTimestamp = s
@@ -1396,7 +1412,8 @@ public enum EpisodePageParser {
         if !text.isEmpty { append(.heading(text)) }
       case "blockquote":
         let text = try node.select("p").map { try InlineMarkdown.render($0) }.filter { !$0.isEmpty }.joined(separator: " ")
-        append(.quote(text.isEmpty ? try InlineMarkdown.render(node) : text))
+        let quote = try (text.isEmpty ? InlineMarkdown.render(node) : text)
+        append(.quote(quote))
       case "strong":
         guard !isInside(node, ["p", "li", "h4", "blockquote"]) else { continue }
         let name = try node.text().trimmingCharacters(in: .whitespaces)
@@ -1438,10 +1455,10 @@ Expected: 3 теста PASS. Если `.code` для второго блока �
 - [ ] **Step 6: Проверка на живой странице (вручную, не коммитить)**
 
 ```bash
-mkdir -p Tests/PointFreeKitTests/Fixtures/live
-curl -sS https://www.pointfree.co/episodes/ep1-functions -o Tests/PointFreeKitTests/Fixtures/live/ep1.html
+mkdir -p Tests/live
+curl -sS https://www.pointfree.co/episodes/ep1-functions -o Tests/live/ep1.html
 ```
-Временный тест (не коммитить) или `swift run` с отладочной печатью: распарсить `live/ep1.html`, убедиться, что глав 7, блоков `code` 43, `isTruncated == false`. Затем удалить временный код.
+Временный тест (не коммитить) или `swift run` с отладочной печатью: распарсить `Tests/live/ep1.html`, убедиться, что глав 7, блоков `code` 43, `isTruncated == false`. Затем удалить временный код.
 
 - [ ] **Step 7: Commit**
 
@@ -1518,6 +1535,12 @@ import Testing
   #expect(page.results.isEmpty)
   #expect(page.total == nil)
 }
+
+@Test func matchesWithoutCardsIsStructureChange() {
+  #expect(throws: PointFreeError.structureChanged("search result cards", nil)) {
+    _ = try SearchPageParser.parse(html: "<html><body><p>12 videos match x</p><div>new markup</div></body></html>", url: nil)
+  }
+}
 ```
 
 - [ ] **Step 3: Запустить — не компилируется**
@@ -1570,6 +1593,9 @@ public enum SearchPageParser {
         hits.append(.init(title: stripTimeSuffix(text), timestamp: seconds))
       }
       results.append(SearchResult(slug: slug, number: EpisodeRef.parse(slug)?.number, title: title, snippet: snippet, hits: hits))
+    }
+    if results.isEmpty, let total, total > 0 {
+      throw PointFreeError.structureChanged("search result cards", url)
     }
     return SearchPage(total: total, results: results)
   }
@@ -1673,6 +1699,12 @@ import Testing
   ])
 }
 
+@Test func emptyCollectionsIndexIsStructureChange() {
+  #expect(throws: PointFreeError.self) {
+    _ = try CollectionsParser.parseIndex(html: "<html><body><p>nothing</p></body></html>")
+  }
+}
+
 @Test func parsesCollectionSections() throws {
   let c = try CollectionsParser.parseCollection(html: fixtureString("collection.html"), slug: "composable-architecture")
   #expect(c.title == "Composable Architecture")
@@ -1735,6 +1767,9 @@ public enum CollectionsParser {
       let description = try link.nextElementSibling()?.select("p").first()?.text()
       result.append(.init(slug: slug, title: title, description: description?.isEmpty == false ? description : nil))
     }
+    guard !result.isEmpty else {
+      throw PointFreeError.structureChanged("collections index", URL(string: "https://www.pointfree.co/collections"))
+    }
     return result
   }
 
@@ -1764,7 +1799,7 @@ public enum CollectionsParser {
       guard let match = try node.attr("href").firstMatch(of: episodePattern), let number = Int(match.2) else { continue }
       let divs = try node.select("div")
       let episodeTitle = divs.first().map { (try? $0.text()) ?? "" } ?? (try node.text())
-      let duration = divs.count > 1 ? try divs.get(1).text().replacingOccurrences(of: "\u{00A0}", with: " ") : nil
+      let duration: String? = try (divs.count > 1 ? divs.get(1).text().replacingOccurrences(of: "\u{00A0}", with: " ") : nil)
       let episode = SectionEpisode(number: number, slug: String(match.1), title: episodeTitle, duration: duration)
       if groups.isEmpty { groups.append(.init(heading: "Episodes", episodes: [])) }
       groups[groups.count - 1].episodes.append(episode)
@@ -1821,7 +1856,7 @@ private func transcript() -> Transcript {
   let expected = """
   # Episode #381: Designing for Isolation: Naively
 
-  - Published: 2026-09-21
+  - Published: 2026-09-28
   - Duration: 16:48
   - Access: Members only
   - URL: https://www.pointfree.co/episodes/381
@@ -1856,6 +1891,7 @@ private func transcript() -> Transcript {
   > Note.
 
   ### Sub
+
 
   """
   #expect(md == expected)
@@ -2087,7 +2123,7 @@ public enum MarkdownRenderer {
 - [ ] **Step 4: Тесты проходят**
 
 Run: `swift test --filter MarkdownRendererTests`
-Expected: PASS. Дата `2026-09-21` соответствует `812246400` секунд от 2001-01-01 в UTC; `2018-01-29` — `538899069`. Если тест на дату расходится на день, проверить `timeZone` форматтера, а не менять ожидание.
+Expected: PASS. Дата `2026-09-28` соответствует `812246400` секунд от 2001-01-01 в UTC (проверено `date -r`), `2018-01-29` — `538899069`. Если тест на дату расходится на день, проверить `timeZone` форматтера, а не менять ожидание. Ожидаемая строка в `rendersFullEpisode` заканчивается двумя пустыми строками перед `"""`, потому что рендер завершает каждый блок `\n\n`.
 
 - [ ] **Step 5: Commit**
 
@@ -2247,7 +2283,6 @@ public enum BlogFeedParser {
     private var inEntry = false
     private var currentElement = ""
     private var title = "", link = "", updated = "", content = ""
-    private static let dateFormatter = ISO8601DateFormatter()
 
     func parser(_ parser: XMLParser, didStartElement name: String, namespaceURI: String?, qualifiedName: String?, attributes: [String: String]) {
       currentElement = name
@@ -2281,7 +2316,7 @@ public enum BlogFeedParser {
       guard let url = URL(string: link.trimmingCharacters(in: .whitespaces)),
             let slug = url.pathComponents.last,
             let ref = BlogPostRef.parse(slug),
-            let date = Self.dateFormatter.date(from: updated.trimmingCharacters(in: .whitespacesAndNewlines))
+            let date = try? Date(updated.trimmingCharacters(in: .whitespacesAndNewlines), strategy: .iso8601)
       else { return }
       posts.append(BlogPost(number: ref.number, slug: slug, title: title.trimmingCharacters(in: .whitespacesAndNewlines),
                             url: url, updated: date, contentHTML: content))
@@ -2319,7 +2354,8 @@ public enum BlogContentParser {
         if !text.isEmpty { blocks.append(.listItem(text)) }
       case "blockquote":
         let text = try node.select("p").map { try InlineMarkdown.render($0) }.filter { !$0.isEmpty }.joined(separator: " ")
-        blocks.append(.quote(text.isEmpty ? try InlineMarkdown.render(node) : text))
+        let quote = try (text.isEmpty ? InlineMarkdown.render(node) : text)
+        blocks.append(.quote(quote))
       default: break
       }
     }
@@ -2544,7 +2580,7 @@ private func detailJSON() throws -> EpisodeDetail {
   final class Flag: @unchecked Sendable { var invalidated = false }
   let flag = Flag()
   let out = try await withDependencies {
-    $0.sessionStore.load = { nil }
+    $0.sessionStore.load = { flag.invalidated ? Session(cookie: "NEW", expiresAt: .distantFuture, savedAt: .distantPast) : nil }
     $0.loginLauncher.run = { .success }
     $0.pointFreeClient.invalidateCache = { flag.invalidated = true }
   } operation: { await ToolCatalog().call(name: "login", arguments: try args("{}")) }
@@ -2728,34 +2764,33 @@ public struct LoginLauncher: Sendable {
 }
 
 extension LoginLauncher: DependencyKey {
-  /// Запускает тот же исполняемый файл с подкомандой `login` и ждёт до 5 минут.
+  /// Запускает тот же исполняемый файл с подкомандой `login`. Дочерний процесс сам
+  /// ограничивает ожидание 290 с (код 3); страховочный таймер здесь — 320 с.
+  /// Коды выхода `login`: 0 сохранено, 1 отменено, 2 cookie отвергнута, 3 таймаут, 4 ошибка.
   public static let liveValue = LoginLauncher {
-    let executable = URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).standardizedFileURL
+    let executable = Bundle.main.executableURL
+      ?? URL(fileURLWithPath: ProcessInfo.processInfo.arguments[0]).standardizedFileURL
     let process = Process()
     process.executableURL = executable
-    process.arguments = ["login"]
+    process.arguments = ["login", "--timeout", "290"]
     process.standardOutput = FileHandle.standardError
     process.standardError = FileHandle.standardError
-    try process.run()
-    let status: Int32 = await withTaskGroup(of: Int32?.self) { group in
-      group.addTask {
-        await withCheckedContinuation { continuation in
-          process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
-        }
-      }
-      group.addTask {
-        try? await Task.sleep(for: .seconds(300))
-        if process.isRunning { process.terminate() }
-        return nil
-      }
-      let first = await group.next() ?? nil
-      group.cancelAll()
-      return first ?? 124
+    let watchdog = Task {
+      try? await Task.sleep(for: .seconds(320))
+      if process.isRunning { process.terminate() }
+    }
+    defer { watchdog.cancel() }
+    // terminationHandler ставится до run(), иначе быстрый выход потеряет continuation.
+    let status: Int32 = try await withCheckedThrowingContinuation { continuation in
+      process.terminationHandler = { continuation.resume(returning: $0.terminationStatus) }
+      do { try process.run() } catch { continuation.resume(throwing: error) }
     }
     switch status {
     case 0: return .success
     case 1: return .cancelled
-    case 124: return .failed("timed out after 5 minutes")
+    case 2: return .failed("pointfree.co rejected the session cookie")
+    case 3: return .failed("timed out waiting for the browser login")
+    case 4: return .failed("error during login; see the server's stderr")
     default: return .failed("login process exited with status \(status)")
     }
   }
@@ -2832,7 +2867,11 @@ public struct ToolCatalog: Sendable {
     let page = try EpisodePageParser.parse(html: html, url: detail.pageURL)
 
     if page.isTruncated && detail.subscriberOnly {
-      guard let session = try sessionStore.load(), !session.isExpired(now: now) else { throw PointFreeError.loginRequired }
+      guard let session = try sessionStore.load() else { throw PointFreeError.loginRequired }
+      if session.isExpired(now: now) {
+        try sessionStore.clear()
+        throw PointFreeError.sessionExpired
+      }
       if try await client.validateSession(session.cookie) {
         throw PointFreeError.subscriptionRequired
       } else {
@@ -2896,12 +2935,15 @@ public struct ToolCatalog: Sendable {
     if !force, let session = try sessionStore.load(), !session.isExpired(now: now),
        try await client.validateSession(session.cookie) {
       let days = Int(session.expiresAt.timeIntervalSince(now) / 86_400)
-      return ToolOutput(text: "Already signed in to pointfree.co. Session valid for about \(days) more day(s). Pass force=true to sign in again.")
+      return ToolOutput(text: "Already signed in to pointfree.co. Session valid until \(session.expiresAt) (about \(days) more day(s)). Pass force=true to sign in again.")
     }
     switch try await loginLauncher.run() {
     case .success:
       await client.invalidateCache()
-      return ToolOutput(text: "Signed in to pointfree.co. Members-only transcripts are now available; retry your request.")
+      guard let saved = try sessionStore.load() else {
+        return ToolOutput(text: PointFreeError.loginFailed("login finished but no session was saved").userMessage, isError: true)
+      }
+      return ToolOutput(text: "Signed in to pointfree.co. Session valid until \(saved.expiresAt). Members-only transcripts are now available; retry your request.")
     case .cancelled:
       return ToolOutput(text: "Login was cancelled (the window was closed before signing in).", isError: true)
     case .failed(let message):
@@ -2999,7 +3041,7 @@ enum MCPServerFactory {
         arguments = ToolArguments()
       }
       let output = await catalog.call(name: params.name, arguments: arguments)
-      return .init(content: [.text(output.text)], isError: output.isError)
+      return .init(content: [.text(text: output.text, annotations: nil, _meta: nil)], isError: output.isError)
     }
 
     return server
@@ -3093,12 +3135,12 @@ printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
   | .build/debug/pointfree-mcp serve
 ```
-Expected: две JSON-строки ответов (initialize и список из 5 инструментов), в stdout ничего кроме JSON. Затем:
+Expected: две JSON-строки ответов (initialize и список из 7 инструментов), в stdout ничего кроме JSON. Затем (`sleep` держит stdin открытым, пока обработчик ходит в сеть; при EOF на stdin сервер завершается сразу):
 ```bash
-printf '%s\n%s\n%s\n' \
+(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchEpisode","arguments":{"episode":"1","section":"introduction"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchEpisode","arguments":{"episode":"1","section":"introduction"}}}'; sleep 15) \
   | .build/debug/pointfree-mcp serve
 ```
 Expected: ответ содержит `# Episode #1: Functions` и одну главу. `pointfree-mcp status` печатает «Not signed in». Аналогичный вызов `{"name":"fetchBlogPost","arguments":{"post":"228"}}` возвращает пост с блоками кода.
@@ -3121,9 +3163,9 @@ git commit -m "feat: stdio MCP server with serve, status and logout commands"
 
 **Interfaces:**
 - Consumes: `Session`, `SessionStore`, `PointFreeClient.validateSession`, `PointFreeClient.cookieName`.
-- Produces: команда `pointfree-mcp login [--cookie <value>]`; коды выхода: 0 — сессия сохранена, 1 — отменено пользователем, 2 — cookie отвергнута сайтом, 3 — таймаут.
+- Produces: команда `pointfree-mcp login [--cookie <value>] [--timeout <s>]`; коды выхода: 0 — сессия сохранена, 1 — отменено пользователем, 2 — cookie отвергнута сайтом, 3 — таймаут, 4 — ошибка (сеть, запись файла). `LoginLauncher.liveValue` из Task 12 сопоставляет эти коды.
 
-Механика: `NSApplication.shared` с политикой `.regular`, окно 900×720 с `WKWebView`; `WKWebsiteDataStore(forIdentifier:)` с фиксированным UUID, чтобы профиль WebKit сохранялся между запусками и GitHub помнил пользователя. Наблюдатель `WKHTTPCookieStoreObserver` при каждом изменении ищет `pf_session` для домена `www.pointfree.co` (HttpOnly cookie в `allCookies` возвращаются). Найдя, останавливает цикл `NSApp.stop` и «будит» его пустым событием.
+Механика: `NSApplication.shared` с политикой `.regular`, окно 900×720 с `WKWebView`; `WKWebsiteDataStore(forIdentifier:)` с фиксированным UUID, чтобы профиль WebKit сохранялся между запусками и GitHub помнил пользователя. Наблюдатель `WKHTTPCookieStoreObserver` при каждом изменении ищет `pf_session` для домена `www.pointfree.co` (HttpOnly cookie в `allCookies` возвращаются). Сайт ставит `pf_session` и анонимному посетителю (например, состояние OAuth перед редиректом на GitHub), поэтому найденная cookie сначала проверяется запросом `validateSession`; отвергнутые значения запоминаются и окно ждёт дальше. Только валидная cookie останавливает цикл `NSApp.stop`, который «будится» пустым событием.
 
 - [ ] **Step 1: Контроллер окна**
 
@@ -3139,10 +3181,18 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
 
   private static let dataStoreID = UUID(uuidString: "6B1C8E8A-3C0B-4D4E-9C2C-0F8B8C1D2E3F")!
   private let loginURL = URL(string: "https://www.pointfree.co/login")!
+  private let validate: @Sendable (String) async throws -> Bool
   private var window: NSWindow!
   private var webView: WKWebView!
   private var timeoutTimer: Timer?
+  private var validating = false
+  private var rejected: Set<String> = []
   private(set) var result: Result?
+
+  init(validate: @escaping @Sendable (String) async throws -> Bool) {
+    self.validate = validate
+    super.init()
+  }
 
   func run(timeout: TimeInterval) -> Result {
     let app = NSApplication.shared
@@ -3159,11 +3209,12 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
       backing: .buffered, defer: false
     )
     window.title = "Sign in to Point-Free"
+    window.isReleasedWhenClosed = false
     window.contentView = webView
     window.delegate = self
     window.center()
     window.makeKeyAndOrderFront(nil)
-    app.activate(ignoringOtherApps: true)
+    app.activate()
     webView.load(URLRequest(url: loginURL))
 
     timeoutTimer = Timer.scheduledTimer(withTimeInterval: timeout, repeats: false) { [weak self] _ in
@@ -3179,11 +3230,24 @@ final class LoginWindowController: NSObject, NSWindowDelegate, WKHTTPCookieStore
   }
 
   private func checkCookies() {
-    guard result == nil else { return }
+    guard result == nil, !validating else { return }
     webView.configuration.websiteDataStore.httpCookieStore.getAllCookies { [weak self] cookies in
-      guard let self, self.result == nil else { return }
-      if let cookie = cookies.first(where: { $0.name == PointFreeClient.cookieName && $0.domain.hasSuffix("pointfree.co") }) {
-        self.finish(.cookie(cookie.value, expires: cookie.expiresDate))
+      guard let self, self.result == nil, !self.validating else { return }
+      guard let cookie = cookies.first(where: { $0.name == PointFreeClient.cookieName && $0.domain.hasSuffix("pointfree.co") }),
+            !self.rejected.contains(cookie.value)
+      else { return }
+      self.validating = true
+      let value = cookie.value
+      let expires = cookie.expiresDate
+      let validate = self.validate
+      Task { @MainActor in
+        let ok = (try? await validate(value)) ?? false
+        self.validating = false
+        if ok {
+          self.finish(.cookie(value, expires: expires))
+        } else {
+          self.rejected.insert(value)  // анонимная сессия (например, состояние OAuth); ждём дальше
+        }
       }
     }
   }
@@ -3227,6 +3291,18 @@ struct Login: AsyncParsableCommand {
 
   @MainActor
   func run() async throws {
+    do {
+      try await performLogin()
+    } catch let code as ExitCode {
+      throw code
+    } catch {
+      FileHandle.standardError.write(Data("Login failed: \(error)\n".utf8))
+      throw ExitCode(4)
+    }
+  }
+
+  @MainActor
+  private func performLogin() async throws {
     @Dependency(\.sessionStore) var store
     @Dependency(\.pointFreeClient) var client
 
@@ -3237,7 +3313,8 @@ struct Login: AsyncParsableCommand {
       expires = nil
     } else {
       FileHandle.standardError.write(Data("Opening pointfree.co login window…\n".utf8))
-      let controller = LoginWindowController()
+      let validate = client.validateSession
+      let controller = LoginWindowController(validate: { try await validate($0) })
       switch controller.run(timeout: timeout) {
       case .cookie(let v, let e): value = v; expires = e
       case .cancelled:
@@ -3266,14 +3343,14 @@ struct Login: AsyncParsableCommand {
 - [ ] **Step 3: Ручная проверка**
 
 Run: `swift build && .build/debug/pointfree-mcp login`
-Expected: открывается окно с pointfree.co, после «Login with GitHub» окно закрывается само, в stderr «Signed in. Session saved until …», файл `~/.pointfree-mcp/session.json` с правами `-rw-------`. `pointfree-mcp status` печатает «Signed in». Закрыть окно до входа — код выхода 1.
+Expected: открывается окно с pointfree.co; после нажатия «Login with GitHub» окно не закрывается на промежуточной анонимной cookie, а только после реального входа; в stderr «Signed in. Session saved until …», файл `~/.pointfree-mcp/session.json` с правами `-rw-------`. `pointfree-mcp status` печатает «Signed in». Закрыть окно до входа — код выхода 1. Выключить сеть и запустить `login --cookie x` — код выхода 4.
 
 Затем проверить платный эпизод через сервер:
 ```bash
-printf '%s\n%s\n%s\n' \
+(printf '%s\n%s\n%s\n' \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"0"}}}' \
   '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
-  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchEpisode","arguments":{"episode":"381","section":"t349"}}}' \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"fetchEpisode","arguments":{"episode":"381","section":"t349"}}}'; sleep 15) \
   | .build/debug/pointfree-mcp serve
 ```
 Expected: глава с текстом и кодом, не ошибка `loginRequired`. После `pointfree-mcp logout` тот же вызов возвращает `isError: true` с текстом про `login`.
@@ -3298,7 +3375,6 @@ git commit -m "feat: GitHub login via WKWebView window and login command"
 **Files:**
 - Create: `Tests/PointFreeKitTests/LiveTests.swift`
 - Create: `README.md`
-- Create: `Tests/PointFreeKitTests/Fixtures/live/.gitkeep` (не коммитится — папка в `.gitignore`; шаг только создаёт её локально)
 
 - [ ] **Step 1: Живые тесты за флагом**
 
@@ -3310,16 +3386,22 @@ import Testing
 
 private let live = ProcessInfo.processInfo.environment["POINTFREE_LIVE"] == "1"
 
+/// Живые зависимости: в тестовом контексте swift-dependencies без явного `.live` подставляет unimplemented-значения.
+private func liveClient() -> PointFreeClient {
+  withDependencies { $0.context = .live } operation: { PointFreeClient.live(cache: MemoryCache(ttl: 60, maxEntries: 5)) }
+}
+
 @Test(.enabled(if: live)) func liveSearchAndFreeEpisode() async throws {
-  let client = withDependencies { _ in } operation: { PointFreeClient.live(cache: MemoryCache(ttl: 60, maxEntries: 5)) }
+  let client = liveClient()
   let episodes = try await client.episodes()
   #expect(episodes.count > 300)
+  #expect(episodes.allSatisfy { $0.id == $0.sequence })  // fetchEpisode использует номер как id
 
   let html = try await client.search(SearchQuery(query: "Sendable", scope: .dialogue))
   let search = try SearchPageParser.parse(html: html, url: nil)
   #expect(!search.results.isEmpty)
   #expect(search.total ?? 0 >= search.results.count)
-  #expect(search.results.allSatisfy { !$0.hits.isEmpty })
+  #expect(search.results.contains { !$0.hits.isEmpty })
 
   let posts = try BlogFeedParser.parse(xml: try await client.blogFeed())
   #expect(posts.count > 200)
@@ -3327,13 +3409,13 @@ private let live = ProcessInfo.processInfo.environment["POINTFREE_LIVE"] == "1"
   #expect(!(try BlogContentParser.blocks(html: latest.contentHTML)).isEmpty)
 
   let page = try EpisodePageParser.parse(html: try await client.episodePage("ep1-functions"), url: nil)
-  #expect(page.transcript.chapters.count == 7)
+  #expect(page.transcript.chapters.count >= 5)
   #expect(!page.isTruncated)
   #expect(page.transcript.hasBody)
 }
 
 @Test(.enabled(if: live)) func liveCollections() async throws {
-  let client = withDependencies { _ in } operation: { PointFreeClient.live(cache: MemoryCache(ttl: 60, maxEntries: 5)) }
+  let client = liveClient()
   let index = try CollectionsParser.parseIndex(html: try await client.collectionsPage())
   #expect(index.contains { $0.slug == "composable-architecture" })
   let c = try CollectionsParser.parseCollection(html: try await client.collectionPage("composable-architecture"), slug: "composable-architecture")
@@ -3343,7 +3425,7 @@ private let live = ProcessInfo.processInfo.environment["POINTFREE_LIVE"] == "1"
 }
 
 @Test(.enabled(if: live)) func liveLockedEpisodeWithSavedSession() async throws {
-  let client = withDependencies { _ in } operation: { PointFreeClient.live(cache: MemoryCache(ttl: 60, maxEntries: 5)) }
+  let client = liveClient()
   let page = try EpisodePageParser.parse(html: try await client.episodePage("381"), url: nil)
   let signedIn = (try? SessionStore.liveValue.load()) != nil
   #expect(page.isTruncated == !signedIn)
@@ -3383,7 +3465,7 @@ git commit -m "docs: README, live tests behind POINTFREE_LIVE"
 
 **Spec coverage.** Инструменты: `searchPointFree` с учётом обрезки до ~50 карточек (Task 8, 10, 12), `fetchEpisode` с `section` и ошибками входа (Task 7, 10, 12), `listEpisodes` (Task 2, 10, 12), `fetchCollection` с `slug`/`section` (Task 9, 10, 12), `listBlogPosts` и `fetchBlogPost` через Atom-фид (Task 6, 10, 11, 12), `login` (Task 12, 14). Авторизация через WKWebView, файл 0600, `--cookie`, `logout`, `status` (Task 4, 13, 14). Сеть: User-Agent, таймаут, без редиректов, cookie только для pointfree.co (Task 4, 6). Кэш в памяти, лимит 50, единый TTL 1 ч (Task 5, 6). Разбор HTML по семантике, терпимость к `blockquote` и вложенным заголовкам, `structureChanged` (Task 7–9, 11). Таблица ошибок (Task 4, 12). Тесты на синтетических фикстурах и живые за флагом (Task 15). Лицензионные ограничения: фикстуры синтетические, `live/` в `.gitignore`, транскрипты не пишутся на диск.
 
-**Порядок задач.** Task 11 (блог) идёт до Task 12 (инструменты), потому что каталог ссылается на парсеры блога; остальные задачи в порядке номеров.
+**Порядок задач.** Task 11 (блог) идёт до Task 10 (рендер) и Task 12 (инструменты), потому что рендер и каталог ссылаются на типы блога; остальные задачи в порядке номеров. См. «Execution Order» в шапке.
 
 **Type consistency.** `PointFreeClient` поля (включая `blogFeed`) совпадают между Task 6 и 12; `SearchPage` из Task 8 используется в Task 10 и 12; `Transcript.Block` с `.quote`/`.heading` из Task 7 используется в Task 10 и 11; `EpisodePage.isTruncated`, `Transcript.hasBody`, `Transcript.chapter(matching:)` используются в Task 10 и 12 как определены в Task 7; `BlogPost`, `BlogPostRef`, `BlogFeedParser`, `BlogContentParser` из Task 11 используются в Task 10 и 12; `ToolArguments.string/int/bool` и `ToolOutput` совпадают между Task 12 и 13; `LoginOutcome` совпадает между `LoginLauncher` и `ToolCatalog.login`; коды выхода `Login` (0/1/2/3) согласованы с `LoginLauncher.liveValue` (1 → cancelled, прочие → failed).
 

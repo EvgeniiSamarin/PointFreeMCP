@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import PointFreeKit
 
@@ -35,4 +36,23 @@ import Testing
   #expect(s.groups[1].episodes == [
     .init(number: 86, slug: "ep86-swiftui-snapshot-testing", title: "SwiftUI Snapshot Testing", duration: "28 min"),
   ])
+}
+
+@Test func collectionLinkWithoutSlugIsSkipped() throws {
+  let html = #"<html><body><a href="/collections/"><h4>Broken</h4></a><a href="/collections/tca"><h4>TCA</h4></a></body></html>"#
+  #expect(try CollectionsParser.parseIndex(html: html).map(\.slug) == ["tca"])
+}
+
+@Test func collectionWithoutSectionsIsStructureChange() throws {
+  let url = try #require(URL(string: "https://www.pointfree.co/collections/tca"))
+  #expect(throws: PointFreeError.structureChanged("collection sections", url)) {
+    _ = try CollectionsParser.parseCollection(html: "<html><body><h1>TCA</h1></body></html>", slug: "tca")
+  }
+}
+
+@Test func sectionWithoutEpisodesIsStructureChange() throws {
+  let url = try #require(URL(string: "https://www.pointfree.co/collections/tca/testing"))
+  #expect(throws: PointFreeError.structureChanged("section episodes", url)) {
+    _ = try CollectionsParser.parseSection(html: "<html><body><h1>Testing</h1><h2>Core lessons</h2></body></html>", url: url)
+  }
 }

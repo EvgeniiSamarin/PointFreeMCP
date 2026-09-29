@@ -92,3 +92,14 @@ private func client(
     _ = try await c.collectionsPage()
   }
 }
+
+@Test func blogPostPageIsFetchedWithoutCookieAndCached() async throws {
+  let log = RequestLog()
+  let session = Session(cookie: "COOKIE", expiresAt: Date(timeIntervalSince1970: 5_000), savedAt: Date(timeIntervalSince1970: 0))
+  let c = client(session: session, log: log) { _ in HTTPResponse(statusCode: 200, body: Data("<html><article></article></html>".utf8)) }
+  _ = try await c.blogPostPage("228-lazystate-1-0-now-available-to-everyone")
+  _ = try await c.blogPostPage("228-lazystate-1-0-now-available-to-everyone")
+  #expect(log.requests.count == 1)
+  #expect(log.requests[0].url?.absoluteString == "https://www.pointfree.co/blog/posts/228-lazystate-1-0-now-available-to-everyone")
+  #expect(log.requests[0].value(forHTTPHeaderField: "Cookie") == nil)
+}

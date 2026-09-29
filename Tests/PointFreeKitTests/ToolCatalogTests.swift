@@ -150,7 +150,7 @@ private func detailJSON() throws -> EpisodeDetail {
   #expect(episodes.text.contains("#82"))
 }
 
-@Test func blogToolsListAndFetchFromFeed() async throws {
+@Test func blogToolsListFromFeedAndFetchFromPage() async throws {
   let catalog = ToolCatalog()
   let list = try await withDependencies {
     $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
@@ -161,10 +161,15 @@ private func detailJSON() throws -> EpisodeDetail {
 
   let post = try await withDependencies {
     $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }
+    $0.pointFreeClient.blogPostPage = { path in
+      #expect(path == "228-lazystate-1-0-now-available-to-everyone")
+      return try fixtureString("blog-post.html")
+    }
   } operation: { await catalog.call(name: "fetchBlogPost", arguments: try args(#"{"post":"228"}"#)) }
   #expect(!post.isError)
-  #expect(post.text.hasPrefix("# LazyState 1.0"))
-  #expect(post.text.contains("```swift"))
+  #expect(post.text.hasPrefix("# LazyState 1.0: Now available to everyone"))
+  #expect(post.text.contains("```swift\n@LazyState var model = Model()\n```"))
+  #expect(post.text.contains("- Published: 2026-09-14"))
 
   let missing = try await withDependencies {
     $0.pointFreeClient.blogFeed = { try fixtureString("blog-atom.xml") }

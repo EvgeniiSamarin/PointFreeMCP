@@ -12,6 +12,7 @@ public struct PointFreeClient: Sendable {
   public var collectionPage: @Sendable (_ slug: String) async throws -> String
   public var sectionPage: @Sendable (_ slug: String, _ section: String) async throws -> String
   public var blogFeed: @Sendable () async throws -> String
+  public var blogPostPage: @Sendable (_ pathComponent: String) async throws -> String
   public var validateSession: @Sendable (_ cookie: String) async throws -> Bool
   public var invalidateCache: @Sendable () async -> Void
 }
@@ -103,6 +104,9 @@ extension PointFreeClient {
       },
       blogFeed: {
         try await cachedHTML(key: "blog/feed/atom.xml") { try await get("blog/feed/atom.xml", cookie: nil) }
+      },
+      blogPostPage: { pathComponent in
+        try await cachedHTML(key: "blog/posts/\(pathComponent)") { try await get("blog/posts/\(pathComponent)", cookie: nil) }
       },
       validateSession: { cookie in
         var request = URLRequest(url: baseURL.appendingPathComponent("account"))

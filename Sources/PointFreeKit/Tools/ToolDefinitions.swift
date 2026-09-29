@@ -60,7 +60,7 @@ public enum ToolDefinitions {
     ),
     ToolDefinition(
       name: "fetchBlogPost",
-      description: "Fetch a Point-Free Pointers blog post as markdown with code blocks. Accepts a post number (228), slug (228-lazystate-1-0-now-available-to-everyone) or URL. No login needed.",
+      description: "Fetch a Point-Free Pointers blog post as markdown with code blocks (full text from the post page). Accepts a post number (228), slug (228-lazystate-1-0-now-available-to-everyone) or URL. No login needed.",
       inputSchemaJSON: """
       {"type":"object","properties":{
         "post":{"type":"string","description":"Post number, slug, or pointfree.co/blog/posts URL"}

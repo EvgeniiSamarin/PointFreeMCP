@@ -29,6 +29,13 @@ private func detailJSON() throws -> EpisodeDetail {
   #expect(a.string("missing") == nil)
 }
 
+@Test func toolArgumentsIntDoesNotTrapOnHugeDoubles() throws {
+  let a = try args(#"{"limit":1e30,"frac":2.5,"ok":2.0}"#)
+  #expect(a.int("limit") == nil)
+  #expect(a.int("frac") == nil)
+  #expect(a.int("ok") == 2)
+}
+
 @Test func searchToolRendersResults() async throws {
   let out = try await withDependencies {
     $0.pointFreeClient.search = { q in

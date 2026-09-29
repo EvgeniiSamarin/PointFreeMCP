@@ -34,7 +34,7 @@ public struct ToolArguments: Decodable, Sendable {
   public func int(_ key: String) -> Int? {
     switch values[key] {
     case .int(let i): return i
-    case .double(let d): return Int(d)
+    case .double(let d): return Int(exactly: d)
     case .string(let s): return Int(s)
     default: return nil
     }

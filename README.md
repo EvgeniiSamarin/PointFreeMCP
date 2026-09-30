@@ -243,7 +243,6 @@ Sources/
     Server/                    MCPServerFactory: tool list + call handler on the MCP Swift SDK
     LoginWindow/               LoginWindowController: WKWebView, cookie polling, validation, menu, Quit handling
 Tests/PointFreeKitTests/       Swift Testing; synthetic HTML/JSON fixtures in Fixtures/; live tests behind POINTFREE_LIVE
-docs/superpowers/              design spec and implementation plan
 ```
 
 Dependencies: [modelcontextprotocol/swift-sdk](https://github.com/modelcontextprotocol/swift-sdk), [SwiftSoup](https://github.com/scinfu/SwiftSoup), [swift-argument-parser](https://github.com/apple/swift-argument-parser), [swift-dependencies](https://github.com/pointfreeco/swift-dependencies), [swift-log](https://github.com/apple/swift-log).
